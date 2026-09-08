@@ -1,0 +1,12 @@
+{
+  "name": "@learnbuddy/dsh-plugin-learnbuddy",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness Plugin for LearnBuddy: Multimodal Companion & AutoGrader",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
