@@ -12,10 +12,9 @@ import { registerLearnBuddySkills } from "./skills/index.js";
 
 export const name = "learnbuddy";
 
-// 声明 DSH 注入的 Cordis 服务依赖
-export const inject = {
-  optional: ["webServer", "skills", "tools"]
-};
+// 声明 Cordis 服务依赖（不需要强绑定特定服务，保持解耦自举）
+export const inject = [];
+
 
 export function apply(ctx) {
   const logger = ctx.logger ? ctx.logger("learnbuddy") : console;
