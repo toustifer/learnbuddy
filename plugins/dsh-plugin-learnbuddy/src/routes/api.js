@@ -15,6 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { MaterialParserService } from "../services/material-parser.js";
 import { MaterialContextService } from "../services/material-context.js";
+import { DshContextBridgeService } from "../services/dsh-context-bridge.js";
 import { AutoGraderEngine } from "../services/grader.js";
 import { MultimodalLLMClient } from "../services/llm.js";
 import { DatabaseStore } from "../db/store.js";
@@ -169,6 +170,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
   const store = options.store || getOrCreateDefaultStore();
   const storage = options.storage || defaultStorage;
   const materialContextService = options.materialContextService || new MaterialContextService(store);
+  const dshBridgeService = options.dshBridgeService || new DshContextBridgeService({ store, materialContextService });
 
   const readRawBody = async (req) => {
     return new Promise((resolve, reject) => {
@@ -513,6 +515,96 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         query,
         count: cards.length,
         cards
+      });
+    }
+
+    // ==========================================
+    // 5.2 DSH 学习助手多模态上下文注入与会话桥接
+    // ==========================================
+    // 1) POST /api/learnbuddy/dsh/session-context
+    if (req.method === "POST" && pathname === "/api/learnbuddy/dsh/session-context") {
+      const body = await parseJsonBody(req);
+      const { materialId, userId = null, maxLength } = body;
+
+      if (!materialId) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: "缺少必要参数: materialId"
+        });
+      }
+
+      const sessionContext = dshBridgeService.getSessionContext(materialId, {
+        userId,
+        store,
+        maxLength
+      });
+
+      if (!sessionContext) {
+        return sendJson(res, 404, {
+          ok: false,
+          error: "未找到指定课件或当前用户无权访问"
+        });
+      }
+
+      return sendJson(res, 200, sessionContext);
+    }
+
+    // 2) POST /api/learnbuddy/dsh/quote
+    if (req.method === "POST" && pathname === "/api/learnbuddy/dsh/quote") {
+      const body = await parseJsonBody(req);
+      const { materialId, page, figureId, customNote, quoteItem: inputQuoteItem } = body;
+
+      let quoteItem = inputQuoteItem || null;
+
+      if (!quoteItem) {
+        let diagram = null;
+        if (materialId) {
+          const matContext = materialContextService.buildMaterialContext(materialId, { store });
+          if (matContext && Array.isArray(matContext.diagrams)) {
+            if (figureId) {
+              diagram = matContext.diagrams.find((d) => d.id === figureId);
+            }
+            if (!diagram && page) {
+              diagram = matContext.diagrams.find((d) => d.page === Number(page));
+            }
+          }
+        }
+
+        if (diagram) {
+          quoteItem = {
+            page: diagram.page,
+            figureId: diagram.id,
+            caption: diagram.caption || diagram.title,
+            description: diagram.description,
+            customNote: customNote || ""
+          };
+        } else {
+          quoteItem = {
+            page: Number(page) || 1,
+            figureId: figureId || "",
+            caption: figureId ? `Figure: ${figureId}` : (page ? `第 ${page} 页图表` : "课件图表"),
+            description: "",
+            customNote: customNote || ""
+          };
+        }
+      }
+
+      const quoteText = dshBridgeService.formatQuoteEvidence(quoteItem);
+
+      return sendJson(res, 200, {
+        ok: true,
+        quoteText,
+        quoteItem
+      });
+    }
+
+    // 3) POST /api/learnbuddy/dsh/message (桥接消息合法性校验与响应处理)
+    if (req.method === "POST" && pathname === "/api/learnbuddy/dsh/message") {
+      const body = await parseJsonBody(req);
+      const result = dshBridgeService.handleBridgeMessage(body);
+      return sendJson(res, 200, {
+        ok: result.type !== "learnbuddy:error",
+        response: result
       });
     }
 
