@@ -1,5 +1,6 @@
 import { registerLearnBuddyRoutes } from "./routes/api.js";
 import { registerLearnBuddySkills } from "./skills/index.js";
+export { MaterialContextService, buildMaterialContext, searchAnswerCards, buildQAPromptContext } from "./services/material-context.js";
 
 /**
  * LearnBuddy Cordis/DSH Plugin

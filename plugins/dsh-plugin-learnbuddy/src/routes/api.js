@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { MaterialParserService } from "../services/material-parser.js";
+import { MaterialContextService } from "../services/material-context.js";
 import { AutoGraderEngine } from "../services/grader.js";
 import { MultimodalLLMClient } from "../services/llm.js";
 import { DatabaseStore } from "../db/store.js";
@@ -167,6 +168,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
   const server = ctx.webServer;
   const store = options.store || getOrCreateDefaultStore();
   const storage = options.storage || defaultStorage;
+  const materialContextService = options.materialContextService || new MaterialContextService(store);
 
   const readRawBody = async (req) => {
     return new Promise((resolve, reject) => {
@@ -270,6 +272,26 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
       return sendJson(res, 200, {
         ok: true,
         materials
+      });
+    }
+
+    // ==========================================
+    // 2.1 获取课件多模态结构化上下文快照 (Material Context)
+    // ==========================================
+    const contextMatch = pathname.match(/^\/api\/learnbuddy\/materials\/([^/]+)\/context$/);
+    if (req.method === "GET" && contextMatch) {
+      const materialId = decodeURIComponent(contextMatch[1]);
+      const userId = url.searchParams.get("userId") || undefined;
+      const context = materialContextService.buildMaterialContext(materialId, { userId, store });
+      if (!context) {
+        return sendJson(res, 404, {
+          ok: false,
+          error: "未找到指定课件或当前用户无权访问"
+        });
+      }
+      return sendJson(res, 200, {
+        ok: true,
+        context
       });
     }
 
@@ -472,36 +494,46 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     }
 
     // ==========================================
-    // 6. 伴学答疑问答（优先检索 DatabaseStore 教师答疑卡）
+    // 5.1 教师答疑卡智能检索与相关度打分 (/qa/cards/search)
+    // ==========================================
+    if (req.method === "POST" && pathname === "/api/learnbuddy/qa/cards/search") {
+      const body = await parseJsonBody(req);
+      const { courseId = null, query = "", threshold, limit, userId = null } = body;
+
+      const cards = materialContextService.searchAnswerCards(courseId, query, {
+        threshold,
+        limit,
+        userId,
+        store
+      });
+
+      return sendJson(res, 200, {
+        ok: true,
+        courseId,
+        query,
+        count: cards.length,
+        cards
+      });
+    }
+
+    // ==========================================
+    // 6. 伴学答疑问答（优先检索 DatabaseStore 教师答疑卡，并为大模型注入结构化 Prompt）
     // ==========================================
     if (req.method === "POST" && pathname === "/api/learnbuddy/qa/ask") {
       const body = await parseJsonBody(req);
-      const { question = "" } = body;
+      const { question = "", courseId = null, materialId = null, userId = null } = body;
       const lowerQ = question.toLowerCase();
 
-      // 1. 从 DatabaseStore 课件的卡片库中快速匹配
-      let hitCard = null;
-      try {
-        const materials = store.listMaterials ? store.listMaterials() : [];
-        for (const mat of materials) {
-          if (Array.isArray(mat.cards)) {
-            for (const card of mat.cards) {
-              const kwList = (card.keywords || "").split(",").map((k) => k.trim().toLowerCase()).filter(Boolean);
-              if (kwList.some((kw) => lowerQ.includes(kw))) {
-                hitCard = {
-                  id: card.id,
-                  title: card.question || "常见答疑",
-                  answer: card.answer
-                };
-                break;
-              }
-            }
-          }
-          if (hitCard) break;
-        }
-      } catch {
-        // 忽略数据库卡片检索异常
-      }
+      // 1. 使用 MaterialContextService 进行高精度答疑卡检索
+      const matchedCards = materialContextService.searchAnswerCards(courseId, question, {
+        threshold: 25,
+        limit: 3,
+        userId,
+        store
+      });
+
+      // 若有得分高于 40 的强命中答疑卡，直接以教师权威答疑卡返回
+      let hitCard = matchedCards.length > 0 && matchedCards[0].score >= 40 ? matchedCards[0] : null;
 
       // 2. 备选 Mock 答疑卡匹配
       if (!hitCard) {
@@ -522,18 +554,31 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
           ok: true,
           source: "teacher_card",
           cardId: hitCard.id,
-          title: hitCard.title,
-          answer: hitCard.answer
+          title: hitCard.title || hitCard.question,
+          answer: hitCard.answer,
+          score: hitCard.score
         });
       }
 
-      // 3. 未命中预制答疑卡：回退多模态大模型解答
+      // 3. 构建多模态结构化上下文与规范 Prompt 注入
+      const matContext = materialId
+        ? materialContextService.buildMaterialContext(materialId, { userId, store })
+        : null;
+
+      const promptContext = materialContextService.buildQAPromptContext({
+        materialContext: matContext,
+        matchedCards,
+        query: question
+      });
+
+      // 4. 未直接命中预制答疑卡：调用多模态大模型解答并注入 Prompt
       try {
         const resp = await llmClient.chatCompletion([
           {
             role: "system",
             content:
-              "你是一位高校计算机实验课程智能伴学助教，请根据计算机网络与 Wireshark 实验背景，针对学生提问进行引导式、循序渐进的耐心解答。"
+              "你是一位高校计算机实验课程智能伴学助教，请根据课件背景与权威实验证据，针对学生提问进行引导式、循序渐进的耐心解答。\n\n" +
+              promptContext
           },
           {
             role: "user",
@@ -543,13 +588,20 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         return sendJson(res, 200, {
           ok: true,
           source: "agent_llm",
-          answer: resp.content
+          answer: resp.content,
+          contextInjected: Boolean(matContext || matchedCards.length > 0)
         });
       } catch {
+        // 模型请求失败兜底提示（严格遵循图表与答疑规范）
+        let fallbackAnswer = `【LearnBuddy 伴学助手】针对问题「${question}」，建议先对照抓包过滤条件（如 tcp.port == 80），确认客户端握手包序号 seq 是否连续递增。`;
+        if (matContext && matContext.diagrams && matContext.diagrams.length > 0) {
+          const firstDiag = matContext.diagrams[0];
+          fallbackAnswer = `【LearnBuddy 伴学助手】根据第 ${firstDiag.page} 页图表「${firstDiag.caption || firstDiag.title}」，请重点核查报文首部标志位与时序交互。针对问题「${question}」，建议确认客户端握手包序号 seq 是否连续递增。`;
+        }
         return sendJson(res, 200, {
           ok: true,
           source: "agent_llm",
-          answer: `【LearnBuddy 伴学助手】针对问题「${question}」，建议先对照抓包过滤条件（如 tcp.port == 80），确认客户端握手包序号 seq 是否连续递增。`
+          answer: fallbackAnswer
         });
       }
     }
