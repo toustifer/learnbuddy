@@ -381,6 +381,11 @@ export class DatabaseStore {
     stmt.run(id);
   }
 
+  listMaterials() {
+    const stmt = this.db.prepare("SELECT * FROM materials ORDER BY date DESC, id ASC");
+    return stmt.all().map(mapMaterial);
+  }
+
   // ==========================================
   // Assignments & Permission Filtering
   // ==========================================
