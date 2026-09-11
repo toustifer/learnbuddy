@@ -14,6 +14,11 @@
  * 假 DSH 复刻 dsh-client-connection 的鉴权算法（见 docs/DSH-AUTH-REVERSE-ENGINEERING.md）：
  * cookie 名 sha256(authority)、payload `v1.<b64url(json)>.<b64url(hmac-sha256)>`、
  * authority 必须等于 Host、时间窗必须有效。
+ *
+ * task-09 追加：假 DSH 同时复刻 `isTrustedApiRequest`（Host 必须 loopback、
+ * `sec-fetch-site: cross-site` 一律拒绝、带 Origin 时必须与 Host 同源），
+ * 否则「浏览器带公网 Origin → 403」这个真实故障在本地测不出来
+ * （旧测试不发送 Origin，属于低保真：101 只有在不带 Origin 时才成立）。
  */
 
 import { test, before, after } from "node:test";
@@ -154,17 +159,66 @@ function authenticate(headers, secret, { maxAgeDays = 30 } = {}) {
 }
 
 /**
+ * 复刻 isLoopbackHostname（dsh-client-connection L117-121）：
+ * localhost / [::1] / 127.0.0.0-8 任一地址。
+ */
+function isLoopbackHostname(hostname) {
+  if (hostname === "localhost" || hostname === "[::1]") return true;
+  const parts = hostname.split(".");
+  return parts.length === 4 && parts[0] === "127" && parts.every((part) => /^\d{1,3}$/u.test(part) && Number(part) <= 255);
+}
+
+/**
+ * 复刻 isTrustedApiRequest（dsh-client-connection L201-215）—— /api 的第一道栅栏，
+ * 早于会话鉴权，也正是公网浏览器拿到 **403**（而不是 401）的原因：
+ *   1. Host 必须可解析，且是 loopback（或落在 trustedHosts，本例不用）
+ *   2. `sec-fetch-site: cross-site` 一律拒绝
+ *   3. **带 Origin 时必须与 Host 同源**：`new URL(origin).host === new URL("http://"+host).host`
+ *      —— 网关只改 Host 不改 Origin，就会在这里被打回 403（task-09 的根因）
+ */
+function isTrustedApiRequest(headers) {
+  const host = headers.host;
+  if (host === undefined) return false;
+  let hostUrl;
+  try {
+    hostUrl = new URL(`http://${host}`);
+  } catch {
+    return false;
+  }
+  if (!isLoopbackHostname(hostUrl.hostname)) return false;
+  if (headers["sec-fetch-site"] === "cross-site") return false;
+  const origin = headers.origin;
+  if (origin === undefined) return true;
+  try {
+    return new URL(origin).host === hostUrl.host;
+  } catch {
+    return false;
+  }
+}
+
+/** 403 的响应形态（复刻 requestRejection -> 403 / rejectRemoteStreamUpgrade L377-388） */
+const FORBIDDEN_BODY = "forbidden";
+
+/**
  * 起一个假 DSH Web：
- * - `/` 与 `/index.html`：需要有效会话 cookie，否则 401（复刻 authorizeIndex + frontend-static）
- * - `/api/*`：需要有效会话 cookie，否则 401
- * - `/api/remote.mux`：WebSocket upgrade，需要有效 cookie，否则 raw socket 回 401
+ * - `/api/*`：先过浏览器信任栅栏（Host/Origin/Sec-Fetch-Site）→ 403，再要会话 cookie → 401
+ * - `/` 与 `/index.html`：只需要会话 cookie，否则 401（复刻 authorizeIndex + frontend-static；
+ *   非 /api 路径没有 isTrustedApiRequest 栅栏，这是真实的：DNS rebinding 只威胁 /api）
+ * - `/api/remote.mux`：WebSocket upgrade，同样「先 403 栅栏、再 401」，否则 raw socket 回拒绝
  * - 其它路径：200 + 回显（便于验证代理与 Host 覆盖）
  */
 async function startFakeDsh({ getSecret, maxAgeDays = 30 }) {
-  const state = { secret: getSecret(), httpRequests: [], wsUpgrades: [], authFailures: 0 };
+  const state = { secret: getSecret(), httpRequests: [], wsUpgrades: [], authFailures: 0, trustRejections: 0 };
 
   const server = http.createServer((req, res) => {
     state.httpRequests.push({ url: req.url, method: req.method, headers: { ...req.headers } });
+    // /api/*：先过浏览器信任栅栏（Host/Origin/Sec-Fetch-Site）再谈鉴权
+    if (String(req.url).startsWith("/api/") && !isTrustedApiRequest(req.headers)) {
+      state.trustRejections += 1;
+      res.writeHead(403, { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8" });
+      res.end(FORBIDDEN_BODY);
+      return;
+    }
     if (!authenticate(req.headers, state.secret, { maxAgeDays })) {
       state.authFailures += 1;
       res.writeHead(401, { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8" });
@@ -185,9 +239,21 @@ async function startFakeDsh({ getSecret, maxAgeDays = 30 }) {
     res.end(`FAKE_DSH:${req.url}`);
   });
 
-  // WebSocket upgrade：复刻 api-gateway 的 requestRejection + ws 握手 + 双向转发
+  // WebSocket upgrade：复刻 api-gateway 的 requestRejection（403 栅栏） + ws 握手 + 双向转发
   server.on("upgrade", (req, socket, head) => {
     state.wsUpgrades.push({ url: req.url, headers: { ...req.headers } });
+    if (!isTrustedApiRequest(req.headers)) {
+      state.trustRejections += 1;
+      socket.end([
+        "HTTP/1.1 403 Forbidden",
+        "Connection: close",
+        "Content-Type: text/plain; charset=utf-8",
+        `Content-Length: ${String(Buffer.byteLength(FORBIDDEN_BODY))}`,
+        "",
+        FORBIDDEN_BODY
+      ].join("\r\n"));
+      return;
+    }
     if (!authenticate(req.headers, state.secret, { maxAgeDays })) {
       state.authFailures += 1;
       socket.end([
@@ -312,9 +378,12 @@ class FrameDecoder {
 
 /**
  * 原始 WebSocket 客户端：手写握手 + 帧读写，验证网关是否真的转发了 101 与字节流。
+ * @param {object} [options]
+ * @param {Record<string,string>} [options.headers] 额外/覆盖请求头（真实浏览器场景传 Origin、
+ *   Sec-Fetch-*；Host 也可由此覆盖成公网 authority）
  * @returns {Promise<{status:number, headers:object, acceptValid:boolean, sendText, nextFrame, close}>}
  */
-function wsConnect(port, wsPath, { headers = {}, timeoutMs = 5000 } = {}) {
+function wsConnect(port, wsPath, { headers = {}, timeoutMs = 5000, hostHeader } = {}) {
   return new Promise((resolve, reject) => {
     const socket = net.connect(port, "127.0.0.1");
     const key = randomBytes(16).toString("base64");
@@ -330,15 +399,16 @@ function wsConnect(port, wsPath, { headers = {}, timeoutMs = 5000 } = {}) {
     };
 
     socket.on("connect", () => {
-      const lines = [
-        `GET ${wsPath} HTTP/1.1`,
-        `Host: 127.0.0.1:${port}`,
-        "Upgrade: websocket",
-        "Connection: Upgrade",
-        `Sec-WebSocket-Key: ${key}`,
-        "Sec-WebSocket-Version: 13"
-      ];
-      for (const [name, value] of Object.entries(headers)) lines.push(`${name}: ${value}`);
+      const base = {
+        Host: hostHeader || `127.0.0.1:${port}`,
+        Upgrade: "websocket",
+        Connection: "Upgrade",
+        "Sec-WebSocket-Key": key,
+        "Sec-WebSocket-Version": "13"
+      };
+      const merged = { ...base, ...headers };
+      const lines = [`GET ${wsPath} HTTP/1.1`];
+      for (const [name, value] of Object.entries(merged)) lines.push(`${name}: ${value}`);
       socket.write(`${lines.join("\r\n")}\r\n\r\n`);
     });
 
@@ -393,7 +463,7 @@ function wsConnect(port, wsPath, { headers = {}, timeoutMs = 5000 } = {}) {
 }
 
 /** 直接读原始 socket 的 HTTP 响应（用于验证 upgrade 被拒时的状态码与响应体） */
-function rawUpgradeRequest(port, wsPath, { headers = {} } = {}) {
+function rawUpgradeRequest(port, wsPath, { headers = {}, hostHeader } = {}) {
   return new Promise((resolve, reject) => {
     const socket = net.connect(port, "127.0.0.1");
     const key = randomBytes(16).toString("base64");
@@ -412,15 +482,16 @@ function rawUpgradeRequest(port, wsPath, { headers = {} } = {}) {
       socket.destroy();
     };
     socket.on("connect", () => {
-      const lines = [
-        `GET ${wsPath} HTTP/1.1`,
-        `Host: 127.0.0.1:${port}`,
-        "Upgrade: websocket",
-        "Connection: Upgrade",
-        `Sec-WebSocket-Key: ${key}`,
-        "Sec-WebSocket-Version: 13"
-      ];
-      for (const [name, value] of Object.entries(headers)) lines.push(`${name}: ${value}`);
+      const base = {
+        Host: hostHeader || `127.0.0.1:${port}`,
+        Upgrade: "websocket",
+        Connection: "Upgrade",
+        "Sec-WebSocket-Key": key,
+        "Sec-WebSocket-Version": "13"
+      };
+      const merged = { ...base, ...headers };
+      const lines = [`GET ${wsPath} HTTP/1.1`];
+      for (const [name, value] of Object.entries(merged)) lines.push(`${name}: ${value}`);
       socket.write(`${lines.join("\r\n")}\r\n\r\n`);
     });
     socket.on("data", (chunk) => {
@@ -1006,3 +1077,205 @@ test("导出契约：默认网关 authority 与 DSH_PORT 对齐，且 createGate
     await h.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// 7. Origin 同源校验（task-09）
+//
+// 公网实测铁证（129.204.52.57:3088，注入开启）：
+//   WebSocket /api/remote.mux：无 Origin -> 101；Origin=http://129.204.52.57:3088 -> 403；
+//                             Origin=http://127.0.0.1:3080 -> 101
+//   HTTP /api/*：无 Origin -> 通过；Origin=http://129.204.52.57:3088 -> 403
+// 根因：DSH isTrustedApiRequest 除了要求 Host 是 loopback，还要求「带 Origin 时必须与
+// authority 同源」。网关只改写 Host 不改写 Origin -> 403（CSRF 防护的正常行为）。
+//
+// 注意：本节所有用例都**显式携带** Host/Origin/Sec-Fetch-*，因为它们才是浏览器真实行为；
+// 「不带 Origin 拿到 101」是本任务之前唯一被覆盖的路径，也正是缺口被漏掉的原因。
+// ---------------------------------------------------------------------------
+
+/** 模拟公网部署：网关监听 129.204.52.57:3088，浏览器据此发 Host/Origin */
+const PUBLIC_AUTHORITY = "129.204.52.57:3088";
+const PUBLIC_ORIGIN = `http://${PUBLIC_AUTHORITY}`;
+
+/** 真实浏览器对网关的请求头（Host/Origin/Sec-Fetch-*），可用于 HTTP 与 WebSocket */
+function browserHeaders(extra = {}) {
+  return {
+    Host: PUBLIC_AUTHORITY,
+    Origin: PUBLIC_ORIGIN,
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+    ...extra
+  };
+}
+
+/** 真实浏览器的 WebSocket 握手头 */
+function browserUpgradeHeaders(extra = {}) {
+  return browserHeaders({ "Sec-Fetch-Mode": "websocket", "Sec-Fetch-Dest": "websocket", ...extra });
+}
+
+test("单元：buildProxyHeaders 只在会话注入开启时改写 Origin，无 Origin 时不得凭空添加", async () => {
+  const on = await startHarness({ secret: newSecret(), enabled: true });
+  const off = await startHarness({ secret: newSecret(), enabled: false });
+  try {
+    assert.equal(on.gateway.proxy.originRewrite, true, "注入开启 -> 启用 Origin 改写");
+    assert.equal(off.gateway.proxy.originRewrite, false, "注入关闭 -> 不改写（行为与现状一致）");
+
+    const browserReq = {
+      headers: { host: PUBLIC_AUTHORITY, origin: PUBLIC_ORIGIN, "sec-fetch-site": "same-origin", cookie: "keep=1" }
+    };
+
+    const injected = on.gateway.proxy.buildProxyHeaders(browserReq, "dsh-auth-x=y");
+    assert.equal(injected.host, on.dsh.authority, "Host 仍必须覆盖为 loopback authority");
+    assert.equal(injected.origin, `http://${on.dsh.authority}`, "Origin 必须改写成与 authority 严格一致");
+    assert.equal(injected.cookie, "dsh-auth-x=y");
+    assert.equal(browserReq.headers.origin, PUBLIC_ORIGIN, "不得就地修改调用方的 headers 对象");
+
+    // 即使这一刻读不到凭据（cookieHeader undefined），只要开关开着就改写：
+    // 403 栅栏在鉴权之前，不改写会把「未鉴权(401)」误报成「不可信(403)」。
+    const noCredential = on.gateway.proxy.buildProxyHeaders(browserReq, undefined);
+    assert.equal(noCredential.origin, `http://${on.dsh.authority}`);
+
+    // 无 Origin：保持无 Origin（DSH 据此把非浏览器客户端放行；凭空添加会改变语义）
+    const noOrigin = on.gateway.proxy.buildProxyHeaders({ headers: { host: PUBLIC_AUTHORITY } }, "dsh-auth-x=y");
+    assert.equal("origin" in noOrigin, false, "请求不带 Origin 时不得凭空添加");
+
+    // 开关关闭：Origin 与 Cookie 都原样透传
+    const passthrough = off.gateway.proxy.buildProxyHeaders(browserReq, undefined);
+    assert.equal(passthrough.origin, PUBLIC_ORIGIN, "关闭注入时不得改写 Origin");
+    assert.equal(passthrough.cookie, "keep=1");
+  } finally {
+    await on.close();
+    await off.close();
+  }
+});
+
+test("HTTP：带真实浏览器头（公网 Host+Origin+Sec-Fetch-*）注入开启时 /api/* 与内嵌入口都不再 403", async () => {
+  const h = await startHarness({ secret: newSecret(), enabled: true });
+  try {
+    const api = await rawRequest(h.port, "/api/anything", { headers: browserHeaders() });
+    assert.equal(api.status, 200, "带公网 Origin 的 /api 必须被 DSH 信任（403 就是网关没改写 Origin）");
+    const seen = h.dsh.state.httpRequests.at(-1);
+    assert.equal(seen.headers.host, h.dsh.authority, "Host 必须改写为 loopback authority");
+    assert.equal(seen.headers.origin, `http://${h.dsh.authority}`, "Origin 必须与 authority 同源");
+    assert.equal(seen.headers["sec-fetch-site"], "same-origin", "Sec-Fetch-* 原样透传（无需也不应改写）");
+
+    // 内嵌助手入口同样要通
+    const entry = await rawRequest(h.port, "/?learnbuddy=embedded", { headers: browserHeaders({ "Sec-Fetch-Dest": "iframe" }) });
+    assert.equal(entry.status, 200, "带公网 Origin 的内嵌助手入口必须 200");
+    assert.match(entry.body, new RegExp(INDEX_MARKER));
+
+    // 不回归：无 Origin / 只有公网 Host 的请求仍然正常
+    assert.equal((await rawRequest(h.port, "/api/anything")).status, 200, "无 Origin 仍正常");
+    assert.equal(
+      (await rawRequest(h.port, "/api/anything", { headers: { Host: PUBLIC_AUTHORITY } })).status, 200,
+      "只带公网 Host 的请求仍正常"
+    );
+
+    // Origin: null（sandboxed iframe / opaque origin）也一并改写成同源，否则 DSH 解析失败同样 403
+    assert.equal(
+      (await rawRequest(h.port, "/api/anything", { headers: { Host: PUBLIC_AUTHORITY, Origin: "null" } })).status,
+      200,
+      "Origin: null 也必须被改写成 authority 同源"
+    );
+
+    assert.equal(h.dsh.state.trustRejections, 0, "整个用例不得触发任何 403 信任拒绝");
+  } finally {
+    await h.close();
+  }
+});
+
+test("WebSocket：带真实浏览器头（公网 Origin + Sec-Fetch-Site）握手必须 101 且 Accept 正确", async () => {
+  const secret = newSecret();
+  const h = await startHarness({ secret, enabled: true });
+  try {
+    const client = await wsConnect(h.port, "/api/remote.mux", {
+      headers: browserUpgradeHeaders(),
+      hostHeader: PUBLIC_AUTHORITY
+    });
+    assert.equal(client.status, 101, "带公网 Origin 的 WebSocket 必须 101（403 就是网关没改写 Origin）");
+    assert.equal(client.headers.upgrade, "websocket");
+    assert.equal(client.acceptValid, true, "Sec-WebSocket-Accept 必须与客户端 key 匹配（不能是伪造的 101）");
+
+    // 真正的双向转发（不只是回握手）
+    client.sendText("origin-ok");
+    const echo = await client.nextFrame();
+    assert.equal(echo.opcode, 0x1);
+    assert.equal(echo.payload.toString("utf-8"), "origin-ok");
+
+    const upgrade = h.dsh.state.wsUpgrades.at(-1);
+    assert.equal(upgrade.headers.host, h.dsh.authority, "upgrade 也必须改写 Host");
+    assert.equal(upgrade.headers.origin, `http://${h.dsh.authority}`, "upgrade 也必须改写 Origin");
+    assert.equal(
+      verifySessionCookie(readCookie(upgrade.headers.cookie, cookieNameForAuthority(h.dsh.authority)), secret),
+      true,
+      "upgrade 仍必须携带有效会话凭据"
+    );
+    assert.equal(h.dsh.state.trustRejections, 0);
+    client.close();
+  } finally {
+    await h.close();
+  }
+});
+
+test("WebSocket：注入开启但不带 Origin 时仍然 101（修复不得让 Origin 变成必要条件）", async () => {
+  const h = await startHarness({ secret: newSecret(), enabled: true });
+  try {
+    const client = await wsConnect(h.port, "/api/remote.mux", { headers: { Host: PUBLIC_AUTHORITY }, hostHeader: PUBLIC_AUTHORITY });
+    assert.equal(client.status, 101);
+    assert.equal(client.acceptValid, true);
+    assert.equal(h.dsh.state.wsUpgrades.at(-1).headers.origin, undefined, "无 Origin 时 upstream 也必须无 Origin");
+    client.close();
+  } finally {
+    await h.close();
+  }
+});
+
+test("回归护栏：注入关闭时带公网 Origin 仍然 403/401（不得放宽成「都放行」）", async () => {
+  const h = await startHarness({ secret: newSecret(), enabled: false });
+  try {
+    const api = await rawRequest(h.port, "/api/anything", { headers: browserHeaders() });
+    assert.equal(api.status, 403, "关闭注入时 Origin 不被改写，DSH 必须照旧 403");
+    assert.match(api.body, /forbidden/u);
+
+    const ws = await rawUpgradeRequest(h.port, "/api/remote.mux", {
+      headers: browserUpgradeHeaders(),
+      hostHeader: PUBLIC_AUTHORITY
+    });
+    assert.equal(ws.status, 403, "关闭注入时 upgrade 也必须是 403（不能伪造 101）");
+    assert.match(ws.text, /forbidden/u);
+
+    // 内嵌助手入口不是 /api 路径，关闭时仍如实 401（task-08 现状不变）
+    const entry = await rawRequest(h.port, "/?learnbuddy=embedded", { headers: browserHeaders({ "Sec-Fetch-Dest": "iframe" }) });
+    assert.equal(entry.status, 401);
+
+    assert.ok(h.dsh.state.trustRejections >= 2, "403 必须真的来自假 DSH 的信任栅栏（否则该用例是空转的）");
+  } finally {
+    await h.close();
+  }
+});
+
+test("保真度自检：403 确由「Origin 与 authority 不同源」触发，且 Sec-Fetch-Site 边界如实保留", async () => {
+  const h = await startHarness({ secret: newSecret(), enabled: false });
+  try {
+    // Origin 与 authority 同源 -> 过栅栏 -> 只是未鉴权 401（证明 403 是 Origin 决定的）
+    const sameOrigin = await rawRequest(h.port, "/api/anything", {
+      headers: { Host: PUBLIC_AUTHORITY, Origin: `http://${h.dsh.authority}` }
+    });
+    assert.equal(sameOrigin.status, 401, "Origin 与 authority 同源时必须过信任栅栏（403 -> 401）");
+
+    // 跨源 Origin -> 403（复刻 Leader 抓到的现象）
+    const crossOrigin = await rawRequest(h.port, "/api/anything", {
+      headers: { Host: PUBLIC_AUTHORITY, Origin: PUBLIC_ORIGIN }
+    });
+    assert.equal(crossOrigin.status, 403, "跨源 Origin 必须复现 403");
+
+    // Sec-Fetch-Site: cross-site 是独立硬规则，本次刻意不改写（真实同源页面不会发 cross-site）
+    const crossSite = await rawRequest(h.port, "/api/anything", {
+      headers: { Host: PUBLIC_AUTHORITY, Origin: `http://${h.dsh.authority}`, "Sec-Fetch-Site": "cross-site" }
+    });
+    assert.equal(crossSite.status, 403, "cross-site 仍拒绝：这是刻意保留的边界");
+  } finally {
+    await h.close();
+  }
+});
+
