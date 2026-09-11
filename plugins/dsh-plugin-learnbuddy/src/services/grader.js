@@ -86,6 +86,12 @@ ${report.hasImages ? "- 附件说明: 包含 Wireshark 抓包截图及标志位�
 
     try {
       const resp = await this.llm.chatCompletion(messages, { responseFormat: "json_object" });
+      // task-13 防护：推理模型可能返回 200 + 空 content（思维链吃光 max_tokens），
+      // llm.js 已给出 ok:false + truncated + error 诊断。空 content 绝不能当成有效评分，
+      // 必须走 catch 里的规则降级并打日志（否则会产出「空评分卡」）。
+      if (resp.ok === false || !String(resp.content || "").trim()) {
+        throw new Error(resp.error || "大模型返回空 content，无法解析评分结果");
+      }
       const parsed = JSON.parse(resp.content);
       return {
         ok: true,

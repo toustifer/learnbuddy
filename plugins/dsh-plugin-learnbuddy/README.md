@@ -104,6 +104,54 @@ plugins/dsh-plugin-learnbuddy/
 > 因此 `LLM_MODEL_VISION` 必须指向可读图模型；若要给纯文本任务换更强模型，
 > 只设 `LLM_MODEL_TEXT`（如 `deepseek-v4-pro`），**不要**去动 `LLM_MODEL_VISION`。
 
+### ⚠️ 推理模型（Reasoning Model）必读：`reasoning_content` 与 max_tokens 陷阱
+
+`deepseek-flash` / `deepseek-v4-pro` 是**推理模型**：它们**先把思维链写进 `message.reasoning_content`，
+最终答案才写进 `message.content`**。实测响应形状：
+
+```jsonc
+{
+  "choices": [{
+    "message": {
+      "content": "收到",                                        // ← 最终答案（**可能为空**）
+      "reasoning_content": "The user is asking me to reply..." // ← 思维链
+    },
+    "finish_reason": "stop"          // token 被截断时是 "length"
+  }],
+  "usage": {
+    "completion_tokens": 16,
+    "completion_tokens_details": { "reasoning_tokens": 14 }     // ← 思考消耗可观测
+  }
+}
+```
+
+**核心陷阱：`max_tokens` 给小了，token 会被思考过程吃光，于是返回 `finish_reason="length"` +
+`content=""`，但 HTTP 依然是 200、不报任何错**（静默空结果）。Leader 用真实密钥实测对照：
+
+| 请求 | 结果 |
+| --- | --- |
+| `max_tokens: 20` | `content=""`、`finish_reason="length"`、输出全在 `reasoning_content` |
+| `max_tokens: 800` | `content="收到"`、`finish_reason="stop"`、`completion_tokens=16` |
+| 不传 `max_tokens` | `content="收到"`（走 API 默认，最安全） |
+
+**max_tokens 建议值**：
+
+| 场景 | 建议 | 说明 |
+| --- | --- | --- |
+| 业务代码（grader / material-parser / autograder-pipeline / 伴学答疑） | **不传 maxTokens** | 走 API 默认。这是生产链路的既有前提，**不要**给业务代码加 maxTokens |
+| 必须显式指定时（如 `scripts/verify-live-llm.mjs`） | **>= 512**（脚本用 1024） | 见 `MIN_REASONING_MODEL_MAX_TOKENS` / `REASONING_SAFE_VERIFY_TOKENS` |
+
+**空 content 不会被静默放过**：`llm.js` 判定为「推理 token 耗尽」（`finish_reason === "length"`，
+或 `reasoning_tokens` 已达 `max_tokens`）时，返回 `ok:false` + `truncated:true` + `error` +
+`diagnostics`（含 `finishReason` / `reasoningTokens` / `maxTokens` / `reasoningContentPreview`），
+上层（AutoGrader / 课件解析 / 伴学答疑）据此走降级，**不会把空结果当成有效输出**。
+`content` 非空时行为与旧版**完全一致**；无密钥时的 Mock 兜底路径也**完全不变**。
+
+> **`LLM_MODEL_VISION` 必须用 `deepseek-flash`**（可读图）。运维陷阱：`deepseek-v4-pro` 读图时
+> **静默返回空 content**（同样 200、不报错）。图片解析相关故障请先核对这个变量。
+> 验证脚本 `scripts/verify-live-llm.mjs` 已不再使用 32/64 这类过小 token 值，
+> 若模型仍返回空 content，脚本会把可辨识诊断原样打印出来。
+
 多模态消息体为 OpenAI 风格（与 DeepSeek 实测一致）：
 
 ```jsonc
@@ -150,6 +198,10 @@ node plugins/dsh-plugin-learnbuddy/server.js
 
 # ── 3) 验证接入是否生效（用真实密钥，脚本自行生成图片做 OCR 断言）───
 node plugins/dsh-plugin-learnbuddy/scripts/verify-live-llm.mjs
+# 预期：7/7 项通过，退出码 0
+# 若①/② 报「空 content 诊断」，按诊断里的 finish_reason / reasoning_tokens / max_tokens 排查：
+#   finish_reason=length → max_tokens 不够（推理模型的思维链吃光了预算）
+#   图片用例失败        → 先确认 LLM_MODEL_VISION=deepseek-flash（deepseek-v4-pro 读图会静默返回空）
 ```
 
 > **回滚到智谱**：把 `LLM_PROVIDER` 设为 `zhipu` 并配 `ZHIPU_API_KEY` 即可；

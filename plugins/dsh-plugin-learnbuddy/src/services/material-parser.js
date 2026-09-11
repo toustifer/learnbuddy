@@ -133,6 +133,12 @@ ${content.substring(0, 3000)}`;
           : { responseFormat: "json_object" }
       );
 
+      // task-13 防护：推理模型可能返回 200 + 空 content（思维链吃光 max_tokens），
+      // llm.js 会给出 ok:false + truncated + error 诊断。空 content 不得当成有效知识点，
+      // 显式抛错以走 catch 里的标杆模板降级（并留下可观测日志）。
+      if (resp.ok === false || !String(resp.content || "").trim()) {
+        throw new Error(resp.error || "大模型返回空 content，无法解析知识点");
+      }
       const parsed = JSON.parse(resp.content);
       if (Array.isArray(parsed.points) && parsed.points.length > 0) {
         return parsed.points;

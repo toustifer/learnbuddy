@@ -45,6 +45,25 @@ export function getOrCreateDefaultStore() {
   return defaultStoreInstance;
 }
 
+/**
+ * 伴学答疑兜底答案（task-13：模型空输出 / 请求失败时使用，保证 answer 永不为空）。
+ * 有课件图表上下文时给出与图表强相关的引导，否则给通用抓包排查建议。
+ */
+function buildQaFallbackAnswer(question, matContext) {
+  if (matContext && matContext.diagrams && matContext.diagrams.length > 0) {
+    const firstDiag = matContext.diagrams[0];
+    return (
+      `【LearnBuddy 伴学助手】根据第 ${firstDiag.page} 页图表「${firstDiag.caption || firstDiag.title}」，` +
+      `请重点核查报文首部标志位与时序交互。针对问题「${question}」，` +
+      `建议确认客户端握手包序号 seq 是否连续递增。`
+    );
+  }
+  return (
+    `【LearnBuddy 伴学助手】针对问题「${question}」，` +
+    `建议先对照抓包过滤条件（如 tcp.port == 80），确认客户端握手包序号 seq 是否连续递增。`
+  );
+}
+
 // 内存 Mock 数据源（保留向后兼容与备用）
 export const mockData = {
   materials: [
@@ -163,7 +182,7 @@ function parseMultipartFormData(buffer, boundary) {
 /**
  * 注册 LearnBuddy API 路由
  * @param {object} ctx 宿主上下文
- * @param {object} [options] 自定义 options (可传入 store, storage)
+ * @param {object} [options] 自定义 options (可传入 store, storage, llmClient)
  */
 export function registerLearnBuddyRoutes(ctx, options = {}) {
   if (!ctx.webServer) return;
@@ -171,6 +190,8 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
   const server = ctx.webServer;
   const store = options.store || getOrCreateDefaultStore();
   const storage = options.storage || defaultStorage;
+  // 允许注入大模型客户端（与 store / storage 同一套 options 风格）；不注入时沿用模块级单例
+  const qaLlmClient = options.llmClient || llmClient;
   const materialContextService = options.materialContextService || new MaterialContextService(store);
   const dshBridgeService = options.dshBridgeService || new DshContextBridgeService({ store, materialContextService });
   const autoGraderPipeline = options.autoGraderPipeline || new AutoGraderPipelineService({
@@ -688,7 +709,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
 
       // 4. 未直接命中预制答疑卡：调用多模态大模型解答并注入 Prompt
       try {
-        const resp = await llmClient.chatCompletion([
+        const resp = await qaLlmClient.chatCompletion([
           {
             role: "system",
             content:
@@ -700,23 +721,38 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
             content: question
           }
         ]);
+
+        // task-13 防护：推理模型（deepseek-flash / deepseek-v4-pro）在 max_tokens 被思维链吃光时
+        // 会返回 200 + 空 content 而不报错；llm.js 已给出 ok:false + truncated + error 的诊断，
+        // 这里绝不能把空串当成有效答案回给前端（否则学生会看到一条空白回答）。
+        const answer = typeof resp.content === "string" ? resp.content.trim() : "";
+        if (resp.ok === false || answer.length === 0) {
+          if (resp.truncated || resp.error) {
+            console.warn(`[LearnBuddy QA] 模型返回空 content，使用兜底答案。诊断: ${resp.error || "未知"}`);
+          }
+          return sendJson(res, 200, {
+            ok: true,
+            source: "agent_llm",
+            answer: buildQaFallbackAnswer(question, matContext),
+            contextInjected: Boolean(matContext || matchedCards.length > 0),
+            fallback: true,
+            truncated: Boolean(resp.truncated)
+          });
+        }
+
         return sendJson(res, 200, {
           ok: true,
           source: "agent_llm",
-          answer: resp.content,
+          answer,
           contextInjected: Boolean(matContext || matchedCards.length > 0)
         });
       } catch {
         // 模型请求失败兜底提示（严格遵循图表与答疑规范）
-        let fallbackAnswer = `【LearnBuddy 伴学助手】针对问题「${question}」，建议先对照抓包过滤条件（如 tcp.port == 80），确认客户端握手包序号 seq 是否连续递增。`;
-        if (matContext && matContext.diagrams && matContext.diagrams.length > 0) {
-          const firstDiag = matContext.diagrams[0];
-          fallbackAnswer = `【LearnBuddy 伴学助手】根据第 ${firstDiag.page} 页图表「${firstDiag.caption || firstDiag.title}」，请重点核查报文首部标志位与时序交互。针对问题「${question}」，建议确认客户端握手包序号 seq 是否连续递增。`;
-        }
         return sendJson(res, 200, {
           ok: true,
           source: "agent_llm",
-          answer: fallbackAnswer
+          answer: buildQaFallbackAnswer(question, matContext),
+          fallback: true
         });
       }
     }

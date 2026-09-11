@@ -9,6 +9,42 @@
  * 5. 严格 JSON 输出模式（response_format=json_object），供结构化知识点抽取与 AutoGrader 评分使用
  * 6. 内置未配置 Key 时的 Mock 兜底，保证无 Key 时系统不崩溃（比赛演示防翻车）
  *
+ * ⚠️⚠️ 推理模型（Reasoning Model）适配 —— 阅读本模块前必读（task-13 实测固化）
+ *
+ *   DeepSeek 的 `deepseek-flash` / `deepseek-v4-pro` 是**推理模型**：它们不是「一次吐答案」，
+ *   而是**先把思维链写进 `message.reasoning_content`，最终答案才写进 `message.content`**。
+ *   官方响应形状（实测）：
+ *
+ *     {
+ *       "choices": [{
+ *         "message": {
+ *           "content": "收到",                                  // ← 最终答案（可能为空！）
+ *           "reasoning_content": "The user is asking me to reply..." // ← 思维链
+ *         },
+ *         "finish_reason": "stop" | "length"
+ *       }],
+ *       "usage": {
+ *         "completion_tokens": 16,
+ *         "completion_tokens_details": { "reasoning_tokens": 14 }   // ← 思考消耗可观测
+ *       }
+ *     }
+ *
+ *   由此产生两个必须记住的运维事实：
+ *   1. `max_tokens` 太小时，token 会被思考过程吃光 → `finish_reason="length"` 且
+ *      **`content` 为空字符串，但 HTTP 仍然是 200、不报任何错**（静默空结果）。
+ *      实测：同一把密钥 `max_tokens=20` → `content=""`；`max_tokens=800` 或不传 → `content="收到"`。
+ *   2. `usage.completion_tokens_details.reasoning_tokens` 可观测思考消耗，
+ *      是判断「空 content 到底是模型故障还是被截断」的关键依据。
+ *
+ *   因此本模块的两条防线（见 `_post` / `describeReasoningTruncation`）：
+ *   - 给推理模型留足预算：`MIN_REASONING_MODEL_MAX_TOKENS`（业务代码一律不传 maxTokens，
+ *     走 API 默认，这是生产链路的既有安全前提）；
+ *   - 一旦判定为「推理 token 耗尽导致空 content」，**绝不静默返回空串**：
+ *     返回 `ok:false` + `error` + `truncated:true` + `diagnostics`，让上层无法把空结果当有效输出。
+ *
+ *   ⚠️ 另有视觉模型陷阱：`LLM_MODEL_VISION` **必须用 `deepseek-flash`**（实测可逐字读图）；
+ *   `deepseek-v4-pro` 读图会**静默返回空 content**（同样不报错）。详见 README。
+ *
  * ⚠️ 密钥安全：本模块只从 process.env 读取密钥，绝不落盘、绝不打印完整密钥。
  */
 
@@ -230,6 +266,78 @@ function normalizeContent(content) {
   return content === undefined || content === null ? "" : String(content);
 }
 
+// ---------------------------------------------------------------------------
+// 推理模型（Reasoning Model）判定与「空 content」诊断
+// ---------------------------------------------------------------------------
+
+/** 已知的推理模型名（先出 reasoning_content，答案才进 content） */
+export const KNOWN_REASONING_MODELS = ["deepseek-flash", "deepseek-v4-pro"];
+
+/**
+ * 给推理模型的 `max_tokens` 建议下限。
+ * 低于该值时，思维链很容易把预算吃光 → `finish_reason="length"` 且 `content=""`。
+ * 业务代码（grader / material-parser / autograder-pipeline）**一律不传 maxTokens**（走 API 默认），
+ * 本常量只用于「必须显式传 maxTokens」的场景（如实盘验证脚本）。
+ */
+export const MIN_REASONING_MODEL_MAX_TOKENS = 512;
+
+/** 实盘验证脚本使用的 token 预算（必须是「推理模型友好」的值，回归测试会断言其不低于下限） */
+export const REASONING_SAFE_VERIFY_TOKENS = { text: 1024, vision: 1024 };
+
+/** 判断模型名是否为已知推理模型（大小写不敏感，容忍 `provider/model` 前缀） */
+export function isReasoningModel(model) {
+  const name = String(model || "")
+    .trim()
+    .toLowerCase()
+    .split("/")
+    .pop();
+  return KNOWN_REASONING_MODELS.includes(name);
+}
+
+/** 从 usage 里取 reasoning_tokens（不同供应商可能省略该字段） */
+export function extractReasoningTokens(usage) {
+  const value = Number(usage?.completion_tokens_details?.reasoning_tokens);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/**
+ * 判定「推理 token 耗尽 → content 为空」这一类截断响应。
+ *
+ * 判据（满足其一即可）：
+ *   1. `finish_reason === "length"`（被 max_tokens 硬截断）；
+ *   2. 传了 max_tokens，且 `reasoning_tokens` 已把预算吃满（`>= maxTokens`）。
+ *
+ * 注意：**不做「推理模型 + 空 content」的兜底判定**——若模型正常 stop 却给空内容，
+ * 那是模型/供应商异常，本函数不臆断为截断（保持旧有「空串退化」行为）。
+ */
+export function describeReasoningTruncation({ finishReason, reasoningTokens, maxTokens } = {}) {
+  const tokens = Number(reasoningTokens) || 0;
+  const budget = Number(maxTokens);
+  const hasBudget = Number.isFinite(budget) && budget > 0;
+  const finishReasonIsLength = String(finishReason || "").toLowerCase() === "length";
+
+  if (!finishReasonIsLength && !(hasBudget && tokens >= budget)) return null;
+
+  const budgetPart = hasBudget ? `，max_tokens=${budget}` : "";
+  const reasonPart = finishReasonIsLength
+    ? `finish_reason=length（输出被 max_tokens 截断）`
+    : `reasoning_tokens=${tokens} 已达 max_tokens=${budget}`;
+  const tail = hasBudget
+    ? `请调大 max_tokens（推理模型建议 >= ${MIN_REASONING_MODEL_MAX_TOKENS}）或不传 max_tokens 走 API 默认。`
+    : `本次未传 max_tokens，可能是供应商侧默认上限过低；请显式调大 max_tokens（建议 >= ${MIN_REASONING_MODEL_MAX_TOKENS}）。`;
+
+  return {
+    reason: finishReasonIsLength ? "reasoning_token_budget_exhausted" : "reasoning_tokens_saturated",
+    finishReason: finishReason ?? null,
+    reasoningTokens: tokens,
+    maxTokens: hasBudget ? budget : null,
+    error:
+      `大模型返回空 content：推理模型（deepseek-flash / deepseek-v4-pro）的思维链 ` +
+      `(reasoning_content) 已耗尽 token 预算（${reasonPart}${budgetPart}），` +
+      `最终答案未能产出。${tail}`
+  };
+}
+
 export class MultimodalLLMClient {
   /**
    * @param {string|object} config 传字符串时等价于 `{ apiKey }`（兼容旧签名 `new MultimodalLLMClient(key)`）
@@ -290,6 +398,10 @@ export class MultimodalLLMClient {
    * 发起对话请求（自动/按 task 选择文本或视觉模型）
    * @param {Array|object} messages 消息数组，content 可为字符串或 [{type:"text"},{type:"image_url"}]
    * @param {object} options { task?: "text"|"vision", model?, temperature?, responseFormat?, timeoutMs?, maxTokens? }
+   *
+   * ⚠️ `maxTokens` 与推理模型：`deepseek-flash` / `deepseek-v4-pro` 会先输出思维链
+   * (`reasoning_content`)，答案才进 `content`。**给小了会拿到空 content**（见文件头注释）。
+   * 业务调用方一律**不要传 maxTokens**（走 API 默认）；必须传时请 >= `MIN_REASONING_MODEL_MAX_TOKENS`。
    */
   async chatCompletion(messages, options = {}) {
     const {
@@ -324,15 +436,18 @@ export class MultimodalLLMClient {
     if (responseFormat === "json_object") {
       payload.response_format = { type: "json_object" };
     }
-    if (Number.isFinite(Number(maxTokens)) && Number(maxTokens) > 0) {
-      payload.max_tokens = Number(maxTokens);
+    // 只有显式传出合法正值才带 max_tokens；否则完全不传，交给 API 默认（推理模型最安全）
+    const tokenBudget =
+      Number.isFinite(Number(maxTokens)) && Number(maxTokens) > 0 ? Number(maxTokens) : null;
+    if (tokenBudget !== null) {
+      payload.max_tokens = tokenBudget;
     }
 
-    return this._post("/chat/completions", payload, { timeoutMs, model: chosenModel });
+    return this._post("/chat/completions", payload, { timeoutMs, model: chosenModel, maxTokens: tokenBudget });
   }
 
   /** 实际 HTTP(S) 请求（http/https 均可，便于离线假供应商测试） */
-  _post(path, payload, { timeoutMs = this.timeoutMs, model = "" } = {}) {
+  _post(path, payload, { timeoutMs = this.timeoutMs, model = "", maxTokens = null } = {}) {
     const url = new URL(`${this.baseUrl}${path}`);
     const transport = url.protocol === "http:" ? http : https;
     const bodyStr = JSON.stringify(payload);
@@ -384,14 +499,46 @@ export class MultimodalLLMClient {
                 );
                 return;
               }
-              succeed({
+              const choice = parsed.choices?.[0];
+              const content = normalizeContent(choice?.message?.content);
+              const usage = parsed.usage;
+              const finishReason = choice?.finish_reason;
+              const reasoningTokens = extractReasoningTokens(usage);
+              const reasoningContent = normalizeContent(choice?.message?.reasoning_content);
+
+              const response = {
                 ok: true,
-                content: normalizeContent(parsed.choices?.[0]?.message?.content),
-                usage: parsed.usage,
+                content,
+                usage,
                 model: parsed.model || model,
-                finishReason: parsed.choices?.[0]?.finish_reason,
+                finishReason,
                 raw: parsed
-              });
+              };
+
+              // 可观测性：始终暴露思维链消耗与本轮预算（无值时为 0 / null）
+              response.reasoningTokens = reasoningTokens;
+              response.reasoningContent = reasoningContent;
+              response.maxTokens = maxTokens !== null && maxTokens !== undefined ? maxTokens : null;
+
+              // 关键防线：推理 token 耗尽导致空 content 时，绝不静默返回空串（见文件头注释）
+              if (content.trim().length === 0) {
+                const truncation = describeReasoningTruncation({ finishReason, reasoningTokens, maxTokens });
+                if (truncation) {
+                  response.ok = false;
+                  response.truncated = true;
+                  response.error = truncation.error;
+                  response.diagnostics = {
+                    reason: truncation.reason,
+                    finishReason: truncation.finishReason,
+                    reasoningTokens: truncation.reasoningTokens,
+                    maxTokens: truncation.maxTokens,
+                    reasoningContentPreview: reasoningContent.slice(0, 200),
+                    isReasoningModel: isReasoningModel(response.model)
+                  };
+                }
+              }
+
+              succeed(response);
               return;
             }
 

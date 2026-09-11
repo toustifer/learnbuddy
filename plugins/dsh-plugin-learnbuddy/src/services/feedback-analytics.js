@@ -659,6 +659,13 @@ ${JSON.stringify(materialDiagrams, null, 2)}
           }
         ], { responseFormat: "json_object" });
 
+        // task-13 防护：推理模型可能返回 200 + 空 content（思维链吃光 max_tokens），
+        // llm.js 会给出 ok:false + truncated + error 诊断。空 content 不得当成有效建议，
+        // 显式抛错以走下方规则降级。
+        if (resp.ok === false || !String(resp.content || "").trim()) {
+          throw new Error(resp.error || "大模型返回空 content，无法解析备课建议");
+        }
+
         let parsed = null;
         try {
           parsed = JSON.parse(resp.content);

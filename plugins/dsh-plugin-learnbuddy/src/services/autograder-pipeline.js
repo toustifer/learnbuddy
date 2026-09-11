@@ -549,6 +549,13 @@ ${report.diagrams?.length ? `\n- 报告附图/图表证据:\n${report.diagrams.m
         { role: "user", content: userPrompt }
       ], { responseFormat: "json_object" });
 
+      // task-13 防护：推理模型可能返回 200 + 空 content（思维链吃光 max_tokens），
+      // llm.js 会给出 ok:false + truncated + error 诊断。空 content 不得当成有效评分结果，
+      // 显式抛错以走下方规则判定降级（strictLLM 模式下则直接上抛给调用方）。
+      if (resp.ok === false || !String(resp.content || "").trim()) {
+        throw new Error(resp.error || "大模型返回空 content，无法解析评分结果");
+      }
+
       let parsed = null;
       try {
         parsed = JSON.parse(resp.content);
