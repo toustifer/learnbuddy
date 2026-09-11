@@ -5,13 +5,38 @@ import { readFile } from "node:fs/promises";
 export const name = "learnbuddy-ui";
 export const inject = ["webServer"];
 
+/**
+ * Parse `LEARNBUDDY_ALLOWED_HOSTS` (comma separated hostnames) into the list the
+ * browser bundle receives. Blank items, schemes, ports, wildcards, and anything
+ * else that is not a bare hostname are dropped. Unset, blank, or fully invalid
+ * input returns an empty list; the client then keeps its local-only default, so a
+ * typo can only lock the page down, never open it up.
+ * @param {string | undefined} raw
+ * @returns {string[]} normalized, de-duplicated, lowercase hostnames
+ */
+export function parseAllowedHosts(raw) {
+  if (typeof raw !== "string") return [];
+  const hosts = [];
+  for (const entry of raw.split(",")) {
+    const host = entry.trim().toLowerCase();
+    if (!/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(host)) continue;
+    if (!hosts.includes(host)) hosts.push(host);
+  }
+  return hosts;
+}
+
 export function apply(ctx) {
-  if (process.env.LEARNBUDDY_PREVIEW_WORKSPACE) {
+  const previewWorkspace = process.env.LEARNBUDDY_PREVIEW_WORKSPACE;
+  const allowedHosts = parseAllowedHosts(process.env.LEARNBUDDY_ALLOWED_HOSTS);
+  // Inject only when there is something to declare: an unset allowlist leaves the
+  // page exactly as it was before this option existed, and the client falls back
+  // to 127.0.0.1 / localhost on its own.
+  if (previewWorkspace || allowedHosts.length) {
     ctx.on("webserver/index-inject", (rows) =>
       rows.push({
         kind: "global",
         name: "__LEARNBUDDY_UI__",
-        value: { previewWorkspace: process.env.LEARNBUDDY_PREVIEW_WORKSPACE },
+        value: { previewWorkspace, allowedHosts },
       }),
     );
   }

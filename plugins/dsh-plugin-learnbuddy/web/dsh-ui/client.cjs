@@ -129,12 +129,52 @@ function Mark({ size = 28, className = "" }) {
   );
 }
 
+// Host allowlist. The DSH host injects `allowedHosts` through
+// `globalThis.__LEARNBUDDY_UI__`. Anything missing, empty, or malformed keeps
+// the original local-only default, so the option can never widen access by
+// accident; only an explicit host entry can.
+const LOCAL_ALLOWED_HOSTS = ["127.0.0.1", "localhost"];
+
+function normalizedHost(value) {
+  if (typeof value !== "string") return "";
+  const host = value.trim().toLowerCase();
+  // Hostnames only: no scheme, port, path, wildcard, or whitespace.
+  if (!/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(host)) return "";
+  return host;
+}
+
+// The configured list only adds hosts: an operator who opens the public entry
+// keeps the local preview working on the same instance.
+function allowedHosts() {
+  const hosts = [...LOCAL_ALLOWED_HOSTS];
+  const configured = globalThis.__LEARNBUDDY_UI__?.allowedHosts;
+  if (!Array.isArray(configured)) return hosts;
+  for (const value of configured) {
+    const host = normalizedHost(value);
+    if (host && !hosts.includes(host)) hosts.push(host);
+  }
+  return hosts;
+}
+
+// The allowlist decides on the hostname alone: protocol and port never widen it.
+function isHostAllowed(hostname, hosts = allowedHosts()) {
+  const host = normalizedHost(hostname);
+  return host !== "" && hosts.includes(host);
+}
+
+// The host-injected preview workspace stays a local-preview affordance. It must
+// pass the same allowlist, or a public deployment would hand every visitor the
+// developer workspace.
+function canOpenPreviewWorkspace() {
+  return (
+    typeof globalThis.__LEARNBUDDY_UI__?.previewWorkspace === "string" &&
+    isHostAllowed(location.hostname)
+  );
+}
+
 function allowedOrigins() {
   const origins = [location.origin];
-  if (
-    location.port === "3089" &&
-    ["127.0.0.1", "localhost"].includes(location.hostname)
-  )
+  if (location.port === "3089" && isHostAllowed(location.hostname))
     origins.push(`${location.protocol}//${location.hostname}:5178`);
   return origins;
 }
@@ -187,10 +227,7 @@ exports.apply = function apply(ctx) {
     if (initializing) return initializing;
     initializing = (async () => {
       const previewPath = globalThis.__LEARNBUDDY_UI__?.previewWorkspace;
-      if (
-        typeof previewPath !== "string" ||
-        !["127.0.0.1", "localhost"].includes(location.hostname)
-      )
+      if (!canOpenPreviewWorkspace())
         throw new Error("尚未关联课程学习会话，请先由后台完成课程工作区接入。");
       await ctx.sessions.refresh();
       const storageKey = `learnbuddy.dsh.session.v1:${contextKey}`;
@@ -543,13 +580,9 @@ exports.apply = function apply(ctx) {
       inject: () => ({
         ...materialInject(),
         start: async () => {
-          const previewPath = globalThis.__LEARNBUDDY_UI__?.previewWorkspace;
-          if (
-            typeof previewPath === "string" &&
-            location.hostname === "127.0.0.1"
-          ) {
+          if (canOpenPreviewWorkspace()) {
             const workspace = await ctx.workspaces.create({
-              path: previewPath,
+              path: globalThis.__LEARNBUDDY_UI__.previewWorkspace,
             });
             if (workspace.title === "workspace")
               await ctx.workspaces.rename(workspace.workspaceId, "学习预览");
