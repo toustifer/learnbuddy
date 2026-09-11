@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { MultimodalLLMClient } from "./llm.js";
+import { MultimodalLLMClient, buildVisionContent } from "./llm.js";
 
 /**
  * 课件与资料多模态解析器 (Material Parser & Knowledge Extractor)
@@ -9,7 +9,28 @@ import { MultimodalLLMClient } from "./llm.js";
  * 1. 结构化解析课件/实验指导书（PDF、DOCX、PPTX、TXT、Markdown、图片）
  * 2. 提取分章节正文与图文关联
  * 3. 调度多模态 LLM 自动提取核心考点与结构化知识点（含页码溯源）
+ *
+ * 模型路由（task-10）：纯文本课件走 LLM_MODEL_TEXT；图片/图表走 LLM_MODEL_VISION。
  */
+
+/** 走视觉模型（可读图）的课件扩展名 */
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
+
+const IMAGE_MIME_TYPES = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".bmp": "image/bmp"
+};
+
+/**
+ * 单张图片内联进请求体的体积上限（原始字节）。
+ * base64 后约膨胀 4/3，这里留足余量避免请求体过大被供应商拒绝；
+ * 超限时**降级为纯文本描述**，不让整条解析链路失败。
+ */
+const MAX_INLINE_IMAGE_BYTES = 8 * 1024 * 1024;
 
 export class MaterialParserService {
   constructor(llmClient = new MultimodalLLMClient()) {
@@ -25,6 +46,8 @@ export class MaterialParserService {
     const ext = path.extname(originalName || filePath).toLowerCase();
     let textContent = "";
     let pageCount = 1;
+    // 图片课件：走视觉模型（LLM_MODEL_VISION），而不是把文件名当正文喂给文本模型
+    let inlineImages = [];
 
     try {
       if (ext === ".txt" || ext === ".md") {
@@ -35,16 +58,20 @@ export class MaterialParserService {
       } else if (ext === ".docx" || ext === ".pptx") {
         textContent = await this._parseOfficeDoc(filePath);
         pageCount = 8;
+      } else if (IMAGE_EXTENSIONS.has(ext)) {
+        inlineImages = await this._readInlineImages(filePath, ext);
+        textContent = `【图片课件】${originalName}`;
       } else {
         textContent = `【课件材料】${originalName}`;
       }
     } catch (err) {
       console.warn(`[MaterialParser] 文件直读失败，降级提取: ${err.message}`);
       textContent = `【课件材料】${originalName}\n重点涵盖 Wireshark 抓包分析、TCP 三次握手与网络异常诊断。`;
+      inlineImages = [];
     }
 
-    // 2. 调用模型抽取结构化知识点
-    const knowledgePoints = await this.extractKnowledgePoints(textContent, originalName);
+    // 2. 调用模型抽取结构化知识点（有图走视觉模型，纯文本走文本模型）
+    const knowledgePoints = await this.extractKnowledgePoints(textContent, originalName, inlineImages);
 
     return {
       title: originalName,
@@ -61,8 +88,16 @@ export class MaterialParserService {
 
   /**
    * 极速多模态/文本抽取知识点
+   *
+   * 模型路由（task-10）：传入 images 时构造多模态消息体并显式走视觉模型
+   * （task="vision" → LLM_MODEL_VISION，如 deepseek-flash）；
+   * 无图时走文本模型（LLM_MODEL_TEXT，未配置则回落视觉模型）。
+   *
+   * @param {string} content 课件正文/摘要
+   * @param {string} title 原始文件名
+   * @param {Array<Buffer|string|object>} images 待内联的图片（Buffer / base64 / data URI）
    */
-  async extractKnowledgePoints(content, title = "") {
+  async extractKnowledgePoints(content, title = "", images = []) {
     const prompt = `你是一位高校计算机网络实验课程讲师。
 请从以下课件/实验指导书内容中，提炼出 3~5 个学生必须掌握的「核心实验考点与易错知识点」。
 必须以严谨的 JSON 格式输出，结构如下：
@@ -83,11 +118,20 @@ export class MaterialParserService {
 内容:
 ${content.substring(0, 3000)}`;
 
+    const imageList = (images || []).filter(Boolean);
+    // 有图 → content 为数组（[{type:"text"},{type:"image_url",...}]），并强制走视觉模型
+    const userContent = imageList.length > 0 ? buildVisionContent(prompt, imageList) : prompt;
+
     try {
-      const resp = await this.llm.chatCompletion([
-        { role: "system", content: "你是一位专业的高校教学助手，负责结构化提炼课件考点。" },
-        { role: "user", content: prompt }
-      ], { responseFormat: "json_object" });
+      const resp = await this.llm.chatCompletion(
+        [
+          { role: "system", content: "你是一位专业的高校教学助手，负责结构化提炼课件考点。" },
+          { role: "user", content: userContent }
+        ],
+        imageList.length > 0
+          ? { responseFormat: "json_object", task: "vision" }
+          : { responseFormat: "json_object" }
+      );
 
       const parsed = JSON.parse(resp.content);
       if (Array.isArray(parsed.points) && parsed.points.length > 0) {
@@ -128,6 +172,28 @@ ${content.substring(0, 3000)}`;
         difficulty: "基础"
       }
     ];
+  }
+
+  /**
+   * 读取图片课件为可内联的 data URI 列表。
+   * 超过 MAX_INLINE_IMAGE_BYTES 的图片不内联（降级为纯文本），避免请求体过大。
+   * @returns {Promise<string[]>} data URI 列表（失败/超限时为空数组）
+   */
+  async _readInlineImages(filePath, ext) {
+    const mimeType = IMAGE_MIME_TYPES[ext] || "image/png";
+    try {
+      const buffer = await fs.readFile(filePath);
+      if (buffer.length === 0 || buffer.length > MAX_INLINE_IMAGE_BYTES) {
+        console.warn(
+          `[MaterialParser] 图片体积 ${buffer.length} 字节超出内联上限，降级为纯文本解析`
+        );
+        return [];
+      }
+      return [buildVisionContent("", [buffer])[0].image_url.url];
+    } catch (err) {
+      console.warn(`[MaterialParser] 图片读取失败，降级为纯文本解析: ${err.message}`);
+      return [];
+    }
   }
 
   async _parsePdfBasic(filePath) {

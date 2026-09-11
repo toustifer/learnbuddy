@@ -63,6 +63,102 @@ plugins/dsh-plugin-learnbuddy/
 | `LEARNBUDDY_DSH_SESSION_INJECT` | 未设置（关闭） | 设为 `1` 开启「为转发到 DSH 的请求注入会话凭据」 |
 | `DSH_HOME` | `~/.dsh` | DSH home；注入器从这里读 `.credentials.yaml` |
 
+---
+
+## 大模型接入层（多供应商，DeepSeek 默认）
+
+`src/services/llm.js` 是**环境变量驱动的多供应商多模态接入层**，默认接 **DeepSeek**，
+同时完整保留 **智谱 GLM** 路径。切换供应商**只改环境变量，不改代码**。
+
+### 环境变量清单
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `LLM_PROVIDER` | `deepseek` | 供应商：`deepseek` \| `zhipu`。填非法值会告警并回落 `deepseek` |
+| `LLM_API_KEY` | 空 | **通用密钥**（优先级最高）。DeepSeek 与智谱都用它 |
+| `LLM_BASE_URL` | 见下方预设 | 覆盖 API 根地址（不要带 `/chat/completions`，代码会自己拼） |
+| `LLM_MODEL_VISION` | 见下方预设 | **可读图**的视觉模型（课件图片解析、报告截图核验走这条） |
+| `LLM_MODEL_TEXT` | 回落视觉模型 | 纯文本任务模型。不配就沿用视觉模型，保证旧部署零行为变化 |
+| `LLM_TIMEOUT_MS` | `45000` | 单次请求超时（毫秒）。非法/非正值回落默认 |
+
+供应商专属变量（**向后兼容**，老部署不改环境也能跑）：
+
+| 变量 | 归属 | 说明 |
+| --- | --- | --- |
+| `DEEPSEEK_API_KEY` | DeepSeek | 等价于只给 DeepSeek 配密钥（不配 `LLM_PROVIDER` 时自动判定为 deepseek） |
+| `DEEPSEEK_BASE_URL` | DeepSeek | 覆盖 DeepSeek 根地址 |
+| `ZHIPU_API_KEY` / `GLM_API_KEY` | 智谱 | **只配这两个之一且未配 `LLM_API_KEY` 时，自动判定 `provider=zhipu`**（旧部署零改动） |
+| `ZHIPU_BASE_URL` | 智谱 | 覆盖智谱根地址 |
+| `GLM_MODEL` | 智谱 | 等价于旧版的视觉模型配置 |
+
+### 供应商预设
+
+| provider | base URL | 视觉模型 | 文本模型 |
+| --- | --- | --- | --- |
+| `deepseek` | `https://api.deepseek.com` | `deepseek-flash` | 未配置时回落 `deepseek-flash` |
+| `zhipu` | `https://open.bigmodel.cn/api/paas/v4` | `glm-4v-flash` | 未配置时回落 `glm-4v-flash` |
+
+> **模型选择要点（Leader 实测）**：DeepSeek 官方 `/models` 提供 `deepseek-flash` 与 `deepseek-v4-pro`。
+> 其中 **`deepseek-flash` 可读图**（对图片中的英文文本可做到逐字识别），
+> **`deepseek-v4-pro` 不支持图片**（同样请求返回空 content）。
+> 因此 `LLM_MODEL_VISION` 必须指向可读图模型；若要给纯文本任务换更强模型，
+> 只设 `LLM_MODEL_TEXT`（如 `deepseek-v4-pro`），**不要**去动 `LLM_MODEL_VISION`。
+
+多模态消息体为 OpenAI 风格（与 DeepSeek 实测一致）：
+
+```jsonc
+{
+  "model": "deepseek-flash",
+  "messages": [{
+    "role": "user",
+    "content": [
+      { "type": "text", "text": "请识别图中文字" },
+      { "type": "image_url", "image_url": { "url": "data:image/png;base64,..." } }
+    ]
+  }],
+  "response_format": { "type": "json_object" }   // 仅结构化抽取/评分任务带上
+}
+```
+
+### 无密钥兜底（演示防翻车）
+
+**未配置任何密钥时不会报错**：客户端进入 Mock 模式，返回结构合法的
+`{ ok: true, content, mock: true }`（评分意图会返回可解析的 Rubric JSON），
+`MaterialParser` 也会降级到内置标杆知识点模板。因此演示环境即使没配 key 也能完整走通流程。
+
+### 服务器上线：环境变量与重启命令
+
+```powershell
+# ── 1) 配置 DeepSeek（推荐，默认 provider）────────────────────────────
+$env:LLM_PROVIDER      = "deepseek"                     # 可省略，默认就是 deepseek
+$env:LLM_API_KEY       = "sk-************"              # 用户提供的 DeepSeek 官方密钥
+$env:LLM_MODEL_VISION  = "deepseek-flash"               # 可读图模型（务必用这个）
+# $env:LLM_MODEL_TEXT  = "deepseek-v4-pro"              # 可选：纯文本换更强模型
+# $env:LLM_BASE_URL    = "https://api.deepseek.com"     # 可选，默认即此值
+# $env:LLM_TIMEOUT_MS  = "45000"                        # 可选，默认 45s
+
+# ── 2) 重启网关（环境变量是**进程级**的，改完必须重启才生效）─────────
+# 按监听端口精确找到旧网关进程并结束（默认 3088；用 netstat 定位 pid）
+$port = if ($env:PORT) { [int]$env:PORT } else { 3088 }
+$pid3088 = (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue).OwningProcess
+if ($pid3088) { Stop-Process -Id $pid3088 -Force; Write-Host "已结束旧网关 pid=$pid3088" }
+
+# 用**同一份环境变量**重新拉起
+node plugins/dsh-plugin-learnbuddy/server.js
+# 启动日志应包含业务路由挂载信息：
+#   [LearnBuddy Plugin] Web API routes mounted at /api/learnbuddy/*
+
+# ── 3) 验证接入是否生效（用真实密钥，脚本自行生成图片做 OCR 断言）───
+node plugins/dsh-plugin-learnbuddy/scripts/verify-live-llm.mjs
+```
+
+> **回滚到智谱**：把 `LLM_PROVIDER` 设为 `zhipu` 并配 `ZHIPU_API_KEY` 即可；
+> 或干脆**清空全部 `LLM_*` 变量、只保留 `ZHIPU_API_KEY`**——接入层会自动判定为智谱。
+>
+> **密钥安全**：代码只从 `process.env` 读取密钥，不落盘、不打日志（`describe()` 只输出脱敏串）。
+> 仓库内（含测试）不得出现任何真实密钥，测试一律使用 `sk-test-placeholder` 之类的占位值。
+> 若你选择用本地 `.env` 文件承载密钥，请确认它已被 `.gitignore` 覆盖（仓库根 `.gitignore` 已含 `.env` / `.env.local` / `.env.*.local`）。
+
 ### 内嵌助手 401 问题与开启方式
 
 前端伴学助手 iframe 指向 `location.origin/?learnbuddy=embedded`，经网关转发到 DSH 时
