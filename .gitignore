@@ -31,3 +31,6 @@ dist-ssr
 
 # OS metadata
 Thumbs.db
+
+# LearnBuddy 运行时数据（SQLite 数据库由服务启动时自动创建，不入库）
+plugins/dsh-plugin-learnbuddy/data/
