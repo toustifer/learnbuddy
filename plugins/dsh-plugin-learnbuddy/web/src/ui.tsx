@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   BookOpen,
   Check,
@@ -12,6 +12,7 @@ import {
   Sparkles,
   LockKeyhole,
 } from "lucide-react";
+import { Dialog, IconButton } from "@radix-ui/themes";
 import { courses } from "./seed";
 import { getBlob } from "./storage";
 import { useStore } from "./store-context";
@@ -164,55 +165,22 @@ export function Modal({
   onClose: () => void;
   wide?: boolean;
 }) {
-  const ref = useRef<HTMLDialogElement>(null);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  useEffect(() => {
-    const prior = document.activeElement as HTMLElement;
-    const el = ref.current!;
-    el.showModal();
-    const cancel = (e: Event) => {
-      e.preventDefault();
-      closeRef.current();
-    };
-    el.addEventListener("cancel", cancel);
-    return () => {
-      el.removeEventListener("cancel", cancel);
-      el.close();
-      prior?.focus();
-    };
-  }, []);
+  const descriptionId = useId();
+  const contentRef = useRef<HTMLDivElement>(null);
+  const returnFocus = useRef(document.activeElement as HTMLElement | null);
   return (
-    <dialog
-      ref={ref}
-      className={"modal " + (wide ? "wide" : "")}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) {
-          const r = e.currentTarget.getBoundingClientRect();
-          if (
-            e.clientX < r.left ||
-            e.clientX > r.right ||
-            e.clientY < r.top ||
-            e.clientY > r.bottom
-          )
-            onClose();
-        }
-      }}
-      aria-label={title}
-    >
-      <header>
-        <div>
-          <h2>{title}</h2>
-          {description && <p>{description}</p>}
-        </div>
-        <button className="icon-button" onClick={onClose} aria-label="关闭弹窗">
-          <X size={18} />
-        </button>
-      </header>
-      {children}
-    </dialog>
+    <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <Dialog.Content ref={contentRef} onOpenAutoFocus={(event) => { event.preventDefault(); (contentRef.current?.querySelector<HTMLElement>('input:not([type="hidden"]):not([type="file"]),textarea,[role="combobox"]') || contentRef.current)?.focus(); }} onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus.current?.focus(); }} className={"product-modal " + (wide ? "wide" : "")} maxWidth={wide ? "900px" : "580px"} aria-describedby={description ? descriptionId : undefined}>
+        <header className="product-modal-header">
+          <div><Dialog.Title>{title}</Dialog.Title>{description && <Dialog.Description id={descriptionId}>{description}</Dialog.Description>}</div>
+          <IconButton variant="ghost" color="gray" onClick={onClose} aria-label="关闭弹窗"><X size={18} /></IconButton>
+        </header>
+        {children}
+      </Dialog.Content>
+    </Dialog.Root>
   );
 }
+
 export function PageHeading({
   eyebrow,
   title,

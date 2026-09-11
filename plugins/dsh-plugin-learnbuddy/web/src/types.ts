@@ -129,13 +129,16 @@ export interface AcademicWorkspace {
   roster: { courseId: string; student: User }[];
 }
 export type Route =
+  | { page: "home" }
+  | { page: "courses" }
+  | { page: "course"; id: string }
   | { page: "library" }
   | { page: "material"; id: string }
-  | { page: "assignments" }
+  | { page: "assignments"; courseId?: string }
   | { page: "assignment"; id: string }
   | { page: "grading"; id: string }
   | { page: "report"; id: string }
-  | { page: "insights" };
+  | { page: "insights"; courseId?: string };
 export interface DocumentPage {
   heading: string;
   eyebrow: string;

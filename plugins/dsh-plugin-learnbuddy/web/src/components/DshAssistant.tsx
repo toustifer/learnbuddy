@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FileText, LoaderCircle, Plus, RefreshCw } from "lucide-react";
+import { FileText, LoaderCircle, Plus, RefreshCw, Sparkles } from "lucide-react";
+import { Button, Tooltip } from "@radix-ui/themes";
 import { LIVE_MODE, getMaterialContext } from "../api";
 import { buildDshHandoff, embeddedDshUrl, sendToDsh } from "../dsh";
 import { chatKey } from "../domain";
@@ -166,12 +167,13 @@ function EmbeddedAssistant({
 
   return (
     <div className="chat-panel dsh-assistant">
+      <header className="assistant-heading"><span className="assistant-avatar"><Sparkles size={18} /></span><div><strong>{user!.role === "teacher" ? "备课助手" : "学习助手"}</strong><span>围绕原文，把问题想明白</span></div><Tooltip content={status === "ready" ? "会话已连接" : status === "loading" ? "正在连接" : "连接暂不可用"}><span className={`assistant-connection is-${status}`} aria-label={status === "ready" ? "会话已连接" : "等待连接"} /></Tooltip></header>
       <div className="dsh-embed-wrap">
         <iframe
           key={attempt}
           ref={iframe}
           src={target.href}
-          title="LearnBuddy DSH 对话"
+          title="LearnBuddy 学习助手"
           allow="microphone"
           className="dsh-embed"
           onLoad={() => setLoaded((n) => n + 1)}
@@ -200,15 +202,15 @@ function EmbeddedAssistant({
         )}
       </div>
       <div className="dsh-reference-toolbar">
-        <button onClick={() => cite()} disabled={status !== "ready"}>
+        <Button size="1" variant="ghost" color="gray" onClick={() => cite()} disabled={status !== "ready"}>
           <FileText size={13} />
-          引用{report ? "当前反馈" : "本篇材料"}
-        </button>
+          引用{report ? "当前反馈" : "当前资料"}
+        </Button>
         {material && (
-          <button onClick={() => setPicker(true)} disabled={status !== "ready"}>
+          <Button size="1" variant="ghost" color="gray" onClick={() => setPicker(true)} disabled={status !== "ready"}>
             <Plus size={13} />
-            课程资料
-          </button>
+            更多资料
+          </Button>
         )}
         <span role="status">{contextStatus}</span>
       </div>

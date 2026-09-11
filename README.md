@@ -1,6 +1,6 @@
 # LearnBuddy
 
-> 2026-09-12：师生工作台与 DSH 已完成本轮界面改版，新增数据库驱动的作业/成绩表和作业表单，本机免费语音已配置。详见 [改版验收记录](docs/FRONTEND_REDESIGN-2026-09-12.md) 与 [LLM/语音配置](docs/LLM_AND_VOICE_SETUP.md)。尚未更新公网。
+> 2026-09-12：课程层级与统一助手已更新，接入 Radix UI 与 Motion，重做工作台、课程入口、资料用途和语音输入区。详见 [最新 UI 验收记录](docs/UI_HIERARCHY_AND_ASSISTANT-2026-09-12.md)、[师生业务接入记录](docs/FRONTEND_REDESIGN-2026-09-12.md) 与 [LLM/语音配置](docs/LLM_AND_VOICE_SETUP.md)。尚未更新公网。
 LearnBuddy 项目仓库。
 
 - [需求补充与教学闭环完成度核验（2026-09-11）](docs/PRODUCT_UPDATE-2026-09-11.md)：提交门禁、语音输入及最新主分支的实际能力边界。

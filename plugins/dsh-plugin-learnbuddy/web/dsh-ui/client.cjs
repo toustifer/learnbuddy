@@ -117,11 +117,46 @@ body.lb-dsh-embedded [data-slot="conversation.input.dock"] .lb-dsh-context{paddi
 .lb-dsh-context-actions{margin:2px 0 0;gap:8px}
 .lb-dsh-context-actions .lb-dsh-action{padding:4px 0;font-size:11px}
 .lb-dsh-context .lb-dsh-context-head>.lb-dsh-action{padding:2px 4px;line-height:1}
-.lb-dsh-voice{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 12px 6px;font-size:11px;color:var(--dsw-alias-label-secondary)}
-.lb-dsh-voice button{display:inline-flex;align-items:center;gap:5px;border:0;background:none;color:var(--dsw-alias-label-secondary);font:inherit;padding:5px 2px;cursor:pointer}
-.lb-dsh-voice button[aria-pressed="true"]{color:#a23d3d}
-.lb-dsh-voice button:disabled{opacity:.5;cursor:wait}
-.lb-dsh-voice span{line-height:1.6}
+
+/* Voice belongs to the native composer tool row through its public right slot. */
+.lb-dsh-voice{position:relative;display:inline-flex;align-items:center;gap:7px;color:var(--dsw-alias-label-secondary);font-size:12px}
+.lb-voice-button{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:0;border-radius:9px;background:transparent;color:inherit;cursor:pointer;position:relative;transition:background .16s,color .16s}
+.lb-voice-button:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-brand-primary)}
+.lb-voice-button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
+.lb-voice-button:disabled{opacity:.5;cursor:wait}
+.lb-voice-button[aria-pressed="true"]{background:#fff0ef;color:#b14943}
+.lb-voice-button:not(:disabled):not([aria-pressed="true"]):is(:hover,:focus-visible):after{content:attr(data-tooltip);position:absolute;bottom:42px;right:0;width:max-content;padding:6px 9px;background:#253c34;color:white;border-radius:6px;font-size:12px;box-shadow:0 3px 12px #15221c16}
+.lb-voice-recording{display:flex;align-items:center;gap:7px;color:#b14943;font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.lb-voice-wave{display:flex;align-items:center;gap:2px;height:19px}
+.lb-voice-wave i{display:block;width:2px;height:10px;background:currentColor;border-radius:2px;animation:lb-voice-pulse .8s ease-in-out infinite alternate}
+.lb-voice-hint{position:absolute;right:0;bottom:44px;min-width:180px;max-width:260px;width:max-content;padding:9px 12px;line-height:1.65;font-size:12px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-overlay);box-shadow:0 4px 20px #15271a10;z-index:5}
+.lb-voice-spinner{animation:lb-voice-spin 1s linear infinite}
+@keyframes lb-voice-pulse{to{transform:scaleY(.35)}}
+@keyframes lb-voice-spin{to{transform:rotate(360deg)}}
+body.lb-dsh-embedded .lb-dsh-hero{padding:42px 24px 20px;gap:12px;text-align:left;align-items:flex-start}
+body.lb-dsh-embedded .lb-dsh-hero .lb-dsh-mark{display:flex;width:42px;height:42px;background:#edf5f1;border-radius:14px;margin-bottom:7px}
+body.lb-dsh-embedded .lb-dsh-hero h2{font-size:22px;line-height:1.5;font-weight:550;letter-spacing:-.5px;max-width:100%;color:#283b35}
+body.lb-dsh-embedded .lb-dsh-hero p{display:block;font-size:13px;line-height:1.8;max-width:270px;color:#697b70}
+body.lb-dsh-embedded [data-slot="conversation.composer.bar"] [role="textbox"]{min-height:78px;font-size:14px;line-height:1.75}
+body.lb-dsh-embedded [data-slot="conversation.input.dock"] .lb-dsh-context{margin:0 12px 10px;padding:10px 12px;background:#f6f8f7;border:1px solid #e9edeb;border-radius:12px}
+body.lb-dsh-embedded .lb-dsh-context summary{font-size:12px;color:#586f63;line-height:1.7}
+body.lb-dsh-embedded .lb-dsh-context-actions .lb-dsh-action{font-size:12px;padding:5px 0;color:#28785a}
+@media(max-height:570px){body.lb-dsh-embedded .lb-dsh-hero{padding:20px 20px 10px;gap:7px}body.lb-dsh-embedded .lb-dsh-hero .lb-dsh-mark{display:none}body.lb-dsh-embedded .lb-dsh-hero h2{font-size:20px}}
+@media(prefers-reduced-motion:reduce){.lb-voice-wave i,.lb-voice-spinner{animation:none}}
+
+/* Stretch the native empty-session seat so the composer remains at the bottom. */
+body.lb-dsh-embedded [data-phase="hero"] [data-composer-seat]{flex:1;min-height:100%;width:100%}
+body.lb-dsh-embedded [data-phase="hero"] [data-chain-overlay-fallback="conversation.composer"]>div{flex:1;min-height:100%;box-sizing:border-box;padding-bottom:10px}
+body.lb-dsh-embedded [data-phase="hero"] [data-chain-overlay-fallback="conversation.composer"]>div>div:has([data-slot="conversation.hero.brand.mark"]){margin-bottom:auto}
+body.lb-dsh-embedded [data-composer-card]{border:1px solid #dfe8e0;border-radius:17px;box-shadow:0 4px 16px #24402906}
+body.lb-dsh-embedded [data-composer-card]>div:has(>div>[data-slot="conversation.input.left"]){flex-wrap:nowrap;gap:4px}
+body.lb-dsh-embedded [data-composer-card] button[aria-label="指令"]{display:none}
+body.lb-dsh-embedded [data-slot="conversation.input.model"] button{max-width:154px;padding:4px 5px;font-size:12px;gap:4px}
+body.lb-dsh-embedded [data-slot="conversation.input.model"] button>span:first-of-type{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+body.lb-dsh-embedded [data-slot="conversation.input.model"] button>span:nth-of-type(2){display:none}
+body.lb-dsh-embedded .lb-dsh-voice.recording+div{min-width:0}
+@media(max-width:400px){body.lb-dsh-embedded [data-slot="conversation.input.model"] button{max-width:125px}body.lb-dsh-embedded [data-composer-card]:has(.lb-dsh-voice.recording) [data-slot="conversation.input.model"] button{max-width:65px}}
+
 `;
 
 function Mark({ size = 28, className = "" }) {
@@ -482,33 +517,50 @@ exports.apply = function apply(ctx) {
       ),
     );
   }
-  function NativeVoice({ draft, inputActions, disabled }) {
+  function NativeVoice({ useInput, inputActions }) {
+    const draft = useInput((s) => s.draft);
+    const inputPhase = useInput((s) => s.phase);
+    const disabled = inputPhase !== "plain";
     const [phase, setPhase] = React.useState("idle");
     const [hint, setHint] = React.useState("");
+    const [seconds, setSeconds] = React.useState(0);
     const current = React.useRef({ draft, inputActions });
     current.current = { draft, inputActions };
     const controller = React.useRef(null);
     React.useEffect(() => {
       controller.current = createDictation({ onState: setPhase, onError: setHint, onText: (text) => {
         current.current.inputActions.setDraft([current.current.draft, text].filter(Boolean).join("\n"));
-        setHint("已填入输入框");
+        setHint("文字已填入，可编辑后发送");
       }});
       return () => controller.current?.destroy();
     }, []);
     React.useEffect(() => { if (disabled) controller.current?.stop(); }, [disabled]);
-    return h("div", { className: "lb-dsh-voice" }, h("button", {
-      type: "button", disabled: disabled || phase === "requesting" || phase === "transcribing",
-      "aria-pressed": phase === "recording", title: "免费本地语音转写，最长 60 秒",
-      onClick: () => { setHint(""); if (phase === "recording") controller.current?.stop(); else void controller.current?.start(); },
-    }, h("svg", { width: 13, height: 13, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.7, "aria-hidden": true },
-      h("rect", { x: 9, y: 2, width: 6, height: 12, rx: 3 }), h("path", { d: "M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" })),
-    phase === "recording" ? "结束录音" : phase === "transcribing" ? "正在转写…" : phase === "requesting" ? "打开麦克风…" : "语音输入"), hint && h("span", { role: "status" }, hint));
+    React.useEffect(() => {
+      if (phase !== "recording") return;
+      setSeconds(0);
+      const started = Date.now();
+      const timer = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 250);
+      return () => clearInterval(timer);
+    }, [phase]);
+    React.useEffect(() => { if (!hint) return; const timer = setTimeout(() => setHint(""), 6000); return () => clearTimeout(timer); }, [hint]);
+    const waiting = phase === "requesting" || phase === "transcribing";
+    const label = phase === "recording" ? "停止录音并转写" : phase === "transcribing" ? "正在转写" : phase === "requesting" ? "正在打开麦克风" : "语音输入";
+    return h("div", { className: "lb-dsh-voice " + phase },
+      phase === "recording" && h("span", { className: "lb-voice-recording", role: "status" }, h("span", { className: "lb-voice-wave", "aria-hidden": true }, ...[0,1,2,3,4].map((i) => h("i", { key:i, style:{animationDelay: (i * .12) + "s"} }))), `0:${String(seconds).padStart(2,"0")}`),
+      h("button", { className: "lb-voice-button", type: "button", disabled: disabled || waiting, "aria-label": label, "aria-pressed": phase === "recording", "data-tooltip": label,
+        onClick: () => { setHint(""); if (phase === "recording") controller.current?.stop(); else void controller.current?.start(); },
+      }, waiting ? h("svg", { className:"lb-voice-spinner", width:18,height:18,viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:1.7,"aria-hidden":true }, h("path",{d:"M20 12a8 8 0 1 1-8-8"}))
+        : phase === "recording" ? h("svg",{width:16,height:16,viewBox:"0 0 24 24",fill:"currentColor","aria-hidden":true},h("rect",{x:5,y:5,width:14,height:14,rx:3}))
+        : h("svg", { width:18,height:18,viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:1.7,"aria-hidden":true },h("rect",{x:9,y:2,width:6,height:12,rx:3}),h("path",{d:"M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"}))),
+      (hint || waiting) && h("div", {className:"lb-voice-hint",role:"status"}, hint || (phase === "transcribing" ? "正在把语音转成文字…" : "请允许使用麦克风"))
+    );
   }
   function Dock({ useMaterial, useInput, inputActions }) {
     const value = useMaterial((x) => x);
     const draft = useInput((s) => s.draft);
     const phase = useInput((s) => s.phase);
     const [inserted, setInserted] = React.useState(null);
+    const attached = Boolean(value && inserted === value.requestId && draft.replace(/\s+/g, " ").includes(value.text.replace(/\s+/g, " ")));
     return h(React.Fragment, null, h(ContextCard, {
       value,
       actions:
@@ -520,7 +572,7 @@ exports.apply = function apply(ctx) {
             "button",
             {
               className: "lb-dsh-action",
-              disabled: phase !== "plain" || inserted === value.requestId,
+              disabled: phase !== "plain" || attached,
               onClick: () => {
                 inputActions.setDraft(
                   [draft, value.text].filter(Boolean).join("\n\n"),
@@ -528,11 +580,11 @@ exports.apply = function apply(ctx) {
                 setInserted(value.requestId);
               },
             },
-            inserted === value.requestId ? "已加入问题" : "加入当前问题",
+            attached ? "已附到问题" : "附到问题",
           ),
           h(ReturnLink, {}),
         ),
-    }), h(NativeVoice, { draft, inputActions, disabled: phase !== "plain" }));
+    }));
   }
   const register = (name, options, component) =>
     ctx.slots.inject(name, () =>
@@ -548,8 +600,8 @@ exports.apply = function apply(ctx) {
       "div",
       { className: "lb-dsh-hero" },
       h(Mark, { size: embedded ? 34 : 42 }),
-      h("h2", null, embedded ? "围绕这份材料继续讨论" : "一起把问题想明白"),
-      h("p", null, embedded ? "带入原文，也可以直接写下问题。" : "从原文出发，逐步理解。"),
+      h("h2", null, embedded ? "哪里还没想明白？" : "一起把问题想明白"),
+      h("p", null, embedded ? "选一段原文，或写下你的疑问。我们一起从这里开始。" : "从原文出发，逐步理解。"),
     ),
   );
   if (globalThis.__LEARNBUDDY_UI__?.previewWorkspace) {
@@ -594,6 +646,7 @@ exports.apply = function apply(ctx) {
     },
     Landing,
   );
+  register("conversation.input.right", { id: "learnbuddy-voice", order: -100 }, NativeVoice);
   register(
     "conversation.input.dock",
     { id: "learnbuddy-material", order: -100, inject: materialInject },

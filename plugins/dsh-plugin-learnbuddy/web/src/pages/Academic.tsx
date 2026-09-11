@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowDownToLine, ArrowLeft, ArrowRight, Plus, RefreshCw, Search, X } from "lucide-react";
+import { Select } from "@radix-ui/themes";
 import { LIVE_MODE, fileUrl } from "../api";
 import { visibleAssignments, visibleCourses } from "../domain";
 import { enrollments, users } from "../seed";
@@ -91,18 +92,19 @@ export function AcademicAssignments() {
         <button role="tab" aria-selected={view === "students"} onClick={() => setView("students")}>学生成绩与完成情况</button>
       </div>}
       <div className="table-controls">
+        <Select.Root value={courseId} onValueChange={(value) => go({ page: "assignments", courseId: value })}><Select.Trigger aria-label="筛选作业所属课程" /><Select.Content><Select.Item value="all">全部课程</Select.Item>{visibleCourses(user!).map((c) => <Select.Item value={c.id} key={c.id}>{c.title}</Select.Item>)}</Select.Content></Select.Root>
         <div className="search-field compact"><Search size={15} /><input value={search} onChange={(e) => setSearch(e.target.value)} aria-label={view === "students" ? "搜索学生或作业" : "搜索作业"} placeholder={view === "students" ? "搜索学生、账号或作业…" : "搜索作业名称…"} />{search && <button aria-label="清空搜索" onClick={() => setSearch("")}><X size={13} /></button>}</div>
-        <select className="compact-select" aria-label="筛选状态" value={filter} onChange={(e) => setFilter(e.target.value)}>
-          <option value="all">全部状态</option>
-          {teacher && view === "assignments" ? <><option value="active">已发布任务</option><option value="draft">草稿</option></> : <>
-            <option value="missing">未提交</option>
-            {teacher ? <><option value="submitted">待评阅</option><option value="review">待复核</option><option value="failed">评阅异常</option></> : <option value="submitted">已提交 · 待反馈</option>}
-            <option value="published">已发布反馈</option>
+        <Select.Root value={filter} onValueChange={setFilter}><Select.Trigger aria-label="筛选状态" /><Select.Content>
+          <Select.Item value="all">全部状态</Select.Item>
+          {teacher && view === "assignments" ? <><Select.Item value="active">已发布任务</Select.Item><Select.Item value="draft">草稿</Select.Item></> : <>
+            <Select.Item value="missing">未提交</Select.Item>
+            {teacher ? <><Select.Item value="submitted">待评阅</Select.Item><Select.Item value="review">待复核</Select.Item><Select.Item value="failed">评阅异常</Select.Item></> : <Select.Item value="submitted">已提交 · 待反馈</Select.Item>}
+            <Select.Item value="published">已发布反馈</Select.Item>
           </>}
-        </select>
-        <select className="compact-select" aria-label="排序方式" value={sort} onChange={(e) => setSort(e.target.value)}>
-          {view === "students" ? <><option value="due">按学生姓名</option><option value="score">按分数从高到低</option></> : <><option value="due">按截止时间</option><option value="name">按作业名称</option></>}
-        </select>
+        </Select.Content></Select.Root>
+        <Select.Root value={sort} onValueChange={setSort}><Select.Trigger aria-label="排序方式" /><Select.Content>
+          {view === "students" ? <><Select.Item value="due">按学生姓名</Select.Item><Select.Item value="score">按分数从高到低</Select.Item></> : <><Select.Item value="due">按截止时间</Select.Item><Select.Item value="name">按作业名称</Select.Item></>}
+        </Select.Content></Select.Root>
         <div className="table-control-actions">
           {teacher && view === "students" && <button className="button secondary small" onClick={() => exportTable(["学生", "账号", "课程", "作业", "提交状态", "提交时间", "评分状态", "分数"], visibleStudentRows.map((r) => [r.student.name, r.student.username, visibleCourses(user!).find((c) => c.id === r.assignment.courseId)?.title || r.assignment.courseId, r.assignment.title, r.submission ? "已提交" : "未提交", r.submission?.submittedAt || "", r.submission?.status || "", scoreOf(r.submission) ?? ""]), "LearnBuddy-学生完成情况.csv")}><ArrowDownToLine size={14} />导出表格</button>}
           {LIVE_MODE && <button className="icon-button" aria-label="刷新作业数据" disabled={academicLoading} onClick={() => void refreshAcademic()}><RefreshCw size={15} className={academicLoading ? "spin" : ""} /></button>}
@@ -163,12 +165,12 @@ export function OnlineReport({ id }: { id: string }) {
 }
 
 export function CourseOverview() {
-  const { academic, state, user, setCourseId } = useStore();
+  const { academic, state, user, go } = useStore();
   return <div className="page"><PageHeading title="学情分析" description="先看各课程的提交与反馈，再进入课程查看评分项表现。" /><AcademicNotice />{academic && <div className="table-scroll"><table className="data-table"><thead><tr><th>课程</th><th className="numeric">学生</th><th className="numeric">作业</th><th className="numeric">已提交</th><th className="numeric">已发布</th><th className="numeric">均分</th><th>操作</th></tr></thead><tbody>{visibleCourses(user!).map((course) => {
     const assignments = state.assignments.filter((a) => a.courseId === course.id);
     const submissions = assignments.flatMap((a) => academic.roster.filter((r) => r.courseId === course.id).map((r) => latestSubmission(state.submissions, a.id, r.student.id))).filter(Boolean) as Submission[];
     const published = submissions.filter((s) => s.status === "published" && scoreOf(s) !== null);
     const average = published.length ? Math.round(published.reduce((sum, s) => sum + scoreOf(s)!, 0) / published.length * 10) / 10 : "—";
-    return <tr key={course.id}><td><button className="cell-link" onClick={() => setCourseId(course.id)}>{course.title}</button><small>{course.code}</small></td><td className="numeric">{academic.roster.filter((r) => r.courseId === course.id).length}</td><td className="numeric">{assignments.length}</td><td className="numeric">{submissions.length}</td><td className="numeric">{published.length}</td><td className="numeric">{average}</td><td><button className="text-button" onClick={() => setCourseId(course.id)}>查看分析<ArrowRight size={13} /></button></td></tr>;
+    return <tr key={course.id}><td><button className="cell-link" onClick={() => go({ page: "insights", courseId: course.id })}>{course.title}</button><small>{course.code}</small></td><td className="numeric">{academic.roster.filter((r) => r.courseId === course.id).length}</td><td className="numeric">{assignments.length}</td><td className="numeric">{submissions.length}</td><td className="numeric">{published.length}</td><td className="numeric">{average}</td><td><button className="text-button" onClick={() => go({ page: "insights", courseId: course.id })}>查看分析<ArrowRight size={13} /></button></td></tr>;
   })}</tbody></table></div>}<p className="table-footnote">均分仅统计已发布成绩，保留各作业原始分值；不同总分的作业不适合直接横向比较。</p></div>;
 }

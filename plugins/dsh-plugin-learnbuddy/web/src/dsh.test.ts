@@ -4,6 +4,16 @@ import { freshState } from "./seed";
 
 describe("DSH material handoff", () => {
   const material = freshState().materials.find((m) => m.id === "mat-tcp")!;
+  it("carries only confirmed teacher reference cards into the unified assistant", () => {
+    const handoff = buildDshHandoff({
+      material: { ...material, cards: [
+        { id: "confirmed", question: "已确认问题", answer: "老师已确认的回答", confirmed: true, keywords: "" },
+        { id: "draft", question: "未发布问题", answer: "未确认草稿内容", confirmed: false, keywords: "" },
+      ] }, references: [], question: "解释一下",
+    });
+    expect(handoff.text).toContain("老师已确认的回答");
+    expect(handoff.text).not.toContain("未确认草稿内容");
+  });
   it("never substitutes local text for a server material whose context has not loaded", () => {
     const handoff = buildDshHandoff({
       material: { ...material, source: "server" },

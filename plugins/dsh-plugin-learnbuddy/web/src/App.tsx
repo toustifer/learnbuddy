@@ -7,12 +7,18 @@ import {
   CircleHelp,
   ClipboardList,
   LogOut,
+  LayoutDashboard,
+  LibraryBig,
   Menu,
   Search,
   Sparkles,
   TrendingUp,
   X,
 } from "lucide-react";
+import { motion } from "motion/react";
+import { Tooltip, IconButton } from "@radix-ui/themes";
+import { courseForRoute } from "./navigation";
+import { CourseGallery, CourseWorkspace, HomeWorkspace } from "./pages/Workspace";
 import { Provider } from "./context";
 import { useStore } from "./store-context";
 import { visibleCourses, visibleMaterials } from "./domain";
@@ -25,7 +31,6 @@ import {
 } from "./pages/Online";
 import { AcademicAssignments, OnlineReport } from "./pages/Academic";
 import { OnlineAssignmentForm } from "./pages/AssignmentForm";
-import { Library } from "./pages/Library";
 import { MaterialWorkspace } from "./pages/Material";
 import {
   Assignments,
@@ -188,8 +193,6 @@ function Shell() {
     user,
     route,
     go,
-    courseId,
-    setCourseId,
     logout,
     login,
     state,
@@ -238,24 +241,16 @@ function Shell() {
   }, [route]);
   if (!user) return <Login />;
   const myCourses = visibleCourses(user);
-  const navPage = ["material", "library"].includes(route.page)
-    ? "library"
-    : route.page === "insights"
-      ? "insights"
-      : "assignments";
-  const title =
-    navPage === "library"
-      ? user.role === "teacher" ? "教学资料" : "课程学习"
-      : navPage === "insights"
-        ? "学情分析"
-        : user.role === "teacher" ? "作业管理" : "我的作业";
-  const routeCourseId =
-    route.page === "material"
-      ? state.materials.find((m) => m.id === route.id)?.courseId
-      : ["assignment", "grading"].includes(route.page) && "id" in route
-        ? state.assignments.find((a) => a.id === route.id)?.courseId
-        : courseId;
-  const course = myCourses.find((c) => c.id === routeCourseId);
+  const navPage = ["material", "library", "courses", "course"].includes(route.page) ? "courses"
+    : route.page === "home" ? "home" : route.page === "insights" ? "insights" : "assignments";
+  const title = navPage === "courses" ? user.role === "teacher" ? "任教课程" : "课程学习" : navPage === "home" ? "工作台" : navPage === "insights" ? "学情分析" : user.role === "teacher" ? "作业管理" : "我的作业";
+  const course = myCourses.find((c) => c.id === courseForRoute(route, state));
+  const navigation = [
+    { page: "home" as const, label: "工作台", icon: LayoutDashboard },
+    { page: "courses" as const, label: user.role === "teacher" ? "任教课程" : "课程学习", icon: LibraryBig },
+    { page: "assignments" as const, label: user.role === "teacher" ? "作业管理" : "我的作业", icon: ClipboardList },
+    ...(user.role === "teacher" ? [{ page: "insights" as const, label: "学情分析", icon: TrendingUp }] : []),
+  ];
   return (
     <div className={`app-shell role-${user.role}`}>
       {mobileOpen && (
@@ -280,16 +275,6 @@ function Shell() {
             <X size={17} />
           </button>
         </div>
-        <label className="course-switcher">
-          <span>{user.role === "teacher" ? "任教课程" : "我的课程"}</span>
-          <select aria-label="切换课程" value={courseId} onChange={(event) => {
-            setCourseId(event.target.value);
-            go({ page: navPage });
-          }}>
-            <option value="all">全部课程</option>
-            {myCourses.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
-          </select>
-        </label>
         <button
           className="sidebar-search"
           onClick={() => {
@@ -302,30 +287,17 @@ function Shell() {
           <kbd>⌘ K</kbd>
         </button>
         <nav aria-label="主导航">
-          <button
-            className={navPage === "library" ? "active" : ""}
-            onClick={() => go({ page: "library" })}
-          >
-            <BookOpen size={17} />
-            {user.role === "teacher" ? "教学资料" : "课程学习"}
-          </button>
-          <button
-            className={navPage === "assignments" ? "active" : ""}
-            onClick={() => go({ page: "assignments" })}
-          >
-            <ClipboardList size={17} />
-            {user.role === "teacher" ? "作业管理" : "我的作业"}
-          </button>
-          {user.role === "teacher" && (
-            <button
-              className={navPage === "insights" ? "active" : ""}
-              onClick={() => go({ page: "insights" })}
-            >
-              <TrendingUp size={17} />
-              学情分析
-            </button>
-          )}
+          {navigation.map(({ page, label, icon: Icon }) => <button key={page} className={navPage === page ? "active" : ""} onClick={() => go({ page })} aria-current={navPage === page ? "page" : undefined}>
+            {navPage === page && <motion.span layoutId="nav-active" className="nav-active" transition={{ type: "spring", stiffness: 430, damping: 38 }} />}
+            <Icon size={18} /><span>{label}</span>
+          </button>)}
         </nav>
+        <section className="sidebar-courses" aria-label={user.role === "teacher" ? "任教课程" : "我的课程"}>
+          <div className="sidebar-section-label"><span>{user.role === "teacher" ? "任教课程" : "我的课程"}</span><Tooltip content="查看全部课程"><IconButton variant="ghost" color="gray" size="1" aria-label="查看全部课程" onClick={() => go({ page: "courses" })}><ArrowRight size={14} /></IconButton></Tooltip></div>
+          {myCourses.map((c) => <button className={course?.id === c.id ? "selected" : ""} key={c.id} onClick={() => go({ page: "course", id: c.id })}>
+            <span className={`course-monogram ${c.color}`}>{c.title.slice(0, 1)}</span><span><strong>{c.title}</strong><small>{c.code}</small></span><ChevronRight size={13} />
+          </button>)}
+        </section>
         <div className="sidebar-bottom">
           <button className="help-button" onClick={() => setModal("about")}>
             <CircleHelp size={15} />
@@ -359,40 +331,17 @@ function Shell() {
             >
               <Menu size={19} />
             </button>
-            <button
-              onClick={() => go({ page: user.role === "teacher" ? "assignments" : "library" })}
-            >
-              {user.role === "teacher" ? "教学空间" : "学习空间"}
-            </button>
-            <ChevronRight size={12} />
-            <button
-              onClick={() => {
-                go({ page: navPage });
-              }}
-            >
-              {title}
-            </button>
-            {course && (
-              <>
-                <ChevronRight size={12} />
-                <button
-                  className="breadcrumb-course"
-                  onClick={() => {
-                    setCourseId(course.id);
-                    go({ page: navPage });
-                  }}
-                >
-                  {course.title}
-                </button>
-              </>
-            )}
+            <button onClick={() => go({ page: "home" })} aria-current={route.page === "home" ? "page" : undefined}>{user.role === "teacher" ? "教学空间" : "学习空间"}</button>
+            {route.page !== "home" && <><ChevronRight size={12} /><button onClick={() => go({ page: navPage })} aria-current={route.page === navPage ? "page" : undefined}>{title}</button></>}
+            {course && <><ChevronRight size={12} /><button className="breadcrumb-course" onClick={() => go({ page: "course", id: course.id })} aria-current={route.page === "course" ? "page" : undefined}>{course.title}</button></>}
           </div>
           <button className="demo-pill" onClick={() => setModal("about")}>
             <span />
             {LIVE_MODE ? LOCAL_SERVICE ? "本机预览" : "在线" : "演示数据"}
           </button>
         </header>
-        <main
+        <motion.main
+          initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .18, ease: "easeOut" }}
           className={
             "main " +
             (route.page === "material" || route.page === "report"
@@ -402,7 +351,9 @@ function Shell() {
           id="main-content"
           key={user.id + ":" + route.page + ("id" in route ? route.id : "")}
         >
-          {route.page === "library" && <Library />}
+          {route.page === "home" && <HomeWorkspace />}
+          {["courses", "library"].includes(route.page) && <CourseGallery />}
+          {route.page === "course" && <CourseWorkspace id={route.id} />}
           {route.page === "material" && <MaterialWorkspace id={route.id} />}
           {route.page === "assignments" &&
             (LIVE_MODE ? <AcademicAssignments /> : <Assignments />)}
@@ -426,7 +377,7 @@ function Shell() {
             ))}
           {route.page === "insights" &&
             (LIVE_MODE ? <OnlineInsights /> : <Insights />)}
-        </main>
+        </motion.main>
       </div>
       {modal === "account" && (
         <Modal

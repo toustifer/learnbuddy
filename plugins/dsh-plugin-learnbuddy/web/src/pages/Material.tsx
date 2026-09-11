@@ -16,6 +16,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
+import { SegmentedControl } from "@radix-ui/themes";
 import { useStore } from "../store-context";
 import { canSeeMaterial } from "../domain";
 import {
@@ -25,7 +26,6 @@ import {
   parseErrorText,
   type MaterialContext,
 } from "../api";
-import { ApiAssistant } from "../components/ApiAssistant";
 import { VoiceInput } from "../components/VoiceInput";
 import { courses, documents } from "../seed";
 import {
@@ -67,7 +67,7 @@ function TeacherPreparation({
         <p className="inline-note">
           {tab === "teaching"
             ? "以下内容暂存于本次登录，不会发布给学生。可把准备好的问题带入右侧助手。"
-            : "已确认答疑卡优先用于课件答疑。当前服务尚未提供编辑、确认或发布接口。"}
+            : "已确认答疑卡会作为学习助手的参考资料。当前服务尚未提供编辑、确认或发布接口。"}
         </p>
         {tab === "teaching" ? (
           <>
@@ -367,8 +367,21 @@ export function MaterialWorkspace({ id }: { id: string }) {
   >("original");
   const [page, setPage] = useState(1);
   const [fontSize, setFontSize] = useState(15);
-  const [side, setSide] = useState<"chat" | "dsh">("chat");
   const [open, setOpen] = useState(true);
+  const [mobileView, setMobileView] = useState("reading");
+  const [compact, setCompact] = useState(() => matchMedia("(max-width:760px)").matches);
+  useEffect(() => {
+    const query = matchMedia("(max-width:760px)");
+    const change = () => setCompact(query.matches);
+    query.addEventListener("change", change);
+    return () => query.removeEventListener("change", change);
+  }, []);
+  function switchMobileView(value: string) {
+    setMobileView(value);
+    if (value === "assistant") setOpen(true);
+    document.getElementById("main-content")?.scrollTo({ top: 0, behavior: "instant" });
+  }
+
   const [incoming, setIncoming] = useState<ChatReference | null>(null);
   const [selection, setSelection] = useState("");
   const [context, setContext] = useState<MaterialContext | null>(null);
@@ -417,9 +430,9 @@ export function MaterialWorkspace({ id }: { id: string }) {
         action={
           <button
             className="button secondary"
-            onClick={() => go({ page: "library" })}
+            onClick={() => go(material ? { page: "course", id: material.courseId } : { page: "courses" })}
           >
-            返回资料库
+            返回课程
           </button>
         }
       />
@@ -440,6 +453,7 @@ export function MaterialWorkspace({ id }: { id: string }) {
     kind: ChatReference["kind"] = "selection",
   ) {
     setOpen(true);
+    if (compact) switchMobileView("assistant");
     setIncoming({
       id: crypto.randomUUID(),
       title,
@@ -497,14 +511,14 @@ export function MaterialWorkspace({ id }: { id: string }) {
     }
   }
   return (
-    <div className="workspace">
+    <div className={`workspace material-workspace mobile-${mobileView}`}>
       <header className="document-titlebar">
         <button
           className="icon-button"
           onClick={() => {
-            go({ page: "library" });
+            go({ page: "course", id: material.courseId });
           }}
-          aria-label="返回资料库"
+          aria-label="返回课程"
         >
           <ArrowLeft size={17} />
         </button>
@@ -546,6 +560,7 @@ export function MaterialWorkspace({ id }: { id: string }) {
           </button>
         </div>
       </header>
+      <div className="mobile-workspace-switch"><SegmentedControl.Root value={mobileView} onValueChange={switchMobileView} size="2"><SegmentedControl.Item value="reading"><span className="mobile-view-label"><BookOpen size={14} />阅读资料</span></SegmentedControl.Item><SegmentedControl.Item value="assistant"><span className="mobile-view-label"><Sparkles size={14} />学习助手</span></SegmentedControl.Item></SegmentedControl.Root></div>
       <div className="workspace-columns">
         <div className="document-column">
           <div className="document-toolbar">
@@ -626,9 +641,9 @@ export function MaterialWorkspace({ id }: { id: string }) {
                 <p>{parseErrorText(material)}</p>
                 <button
                   className="text-button"
-                  onClick={() => go({ page: "library" })}
+                  onClick={() => go(material ? { page: "course", id: material.courseId } : { page: "courses" })}
                 >
-                  返回资料库重新上传
+                  返回课程重新上传
                 </button>
               </div>
             )}
@@ -892,46 +907,13 @@ export function MaterialWorkspace({ id }: { id: string }) {
             </footer>
           )}
         </div>
-        {open && (
+        {open && (!compact || mobileView === "assistant") && (
           <aside className="assistant-column">
-            <div className="assistant-tabs">
-              <button
-                className={side === "chat" ? "active" : ""}
-                onClick={() => setSide("chat")}
-              >
-                <Sparkles size={14} />
-                {user!.role === "teacher" ? "备课答疑" : "课件答疑"}
-              </button>
-              <button
-                className={side === "dsh" ? "active" : ""}
-                onClick={() => setSide("dsh")}
-              >
-                <BookOpen size={14} />
-                DSH 对话
-              </button>
-            </div>
-            {side === "chat" ? (
-              <MaterialAssistant
-                material={
-                  LIVE_MODE
-                    ? {
-                        ...material,
-                        source: "server",
-                        contextSections: context?.sections,
-                      }
-                    : material
-                }
-                incoming={incoming}
-                onConsumed={() => setIncoming(null)}
-                onJump={jump}
-              />
-            ) : (
-              <ChatPanel
-                material={LIVE_MODE ? { ...material, source: "server", contextSections: context?.sections } : material}
-                incoming={incoming}
-                onConsumed={() => setIncoming(null)}
-              />
-            )}
+            <ChatPanel
+              material={LIVE_MODE ? { ...material, source: "server", contextSections: context?.sections } : material}
+              incoming={incoming}
+              onConsumed={() => setIncoming(null)}
+            />
           </aside>
         )}
       </div>
@@ -1012,8 +994,4 @@ export function MaterialWorkspace({ id }: { id: string }) {
       )}
     </div>
   );
-}
-
-function MaterialAssistant(props: Parameters<typeof ApiAssistant>[0]) {
-  return LIVE_MODE ? <ApiAssistant {...props} /> : <ChatPanel {...props} />;
 }

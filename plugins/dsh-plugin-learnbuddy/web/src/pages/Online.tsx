@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, RefreshCw, Search } from "lucide-react";
+import { Button } from "@radix-ui/themes";
 import { request, fileUrl, ApiError } from "../api";
 import { visibleAssignments, visibleCourses } from "../domain";
 import { useStore } from "../store-context";
@@ -546,6 +547,7 @@ export function OnlineInsights() {
   if (!chosen) return <CourseOverview />;
   return (
     <div className="page">
+      <Button className="insights-back" variant="ghost" color="gray" onClick={() => go({ page: "insights" })}><ArrowLeft size={15} />全部课程学情</Button>
       <PageHeading
         title="学情分析"
         description={myCourses.find((c) => c.id === chosen)?.title || "查看已发布成绩与评分项表现。"}

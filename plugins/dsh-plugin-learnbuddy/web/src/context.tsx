@@ -5,6 +5,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { parseRoute, routeHash, courseForRoute } from "./navigation";
 import { Context } from "./store-context";
 import { users, freshState, fixtureGrades } from "./seed";
 import { LIVE_MODE, listMaterials, loginAccount, request } from "./api";
@@ -13,13 +14,6 @@ import { readState, writeState, clearBlobs } from "./storage";
 import type { DemoState, Route, User, ServerReview, AcademicWorkspace } from "./types";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-function parseRoute(): Route {
-  const [page, id] = location.hash.slice(1).split("/");
-  if (["material", "assignment", "grading", "report"].includes(page) && id)
-    return { page, id: decodeURIComponent(id) } as Route;
-  if (page === "assignments" || page === "insights") return { page };
-  return { page: "library" };
-}
 export function Provider({ children }: { children: ReactNode }) {
   const [initial] = useState(() =>
     LIVE_MODE
@@ -111,7 +105,7 @@ export function Provider({ children }: { children: ReactNode }) {
       materialsRequest.current?.abort();
     };
   }, [refreshMaterials]);
-  const [route, setRoute] = useState<Route>(parseRoute);
+  const [route, setRoute] = useState<Route>(() => parseRoute(location.hash));
   const [courseId, setCourseId] = useState("all");
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const running = useRef(new Set<string>());
@@ -120,7 +114,7 @@ export function Provider({ children }: { children: ReactNode }) {
     error: boolean;
   } | null>(initial.warning ? { message: initial.warning, error: true } : null);
   useEffect(() => {
-    const change = () => setRoute(parseRoute());
+    const change = () => setRoute(parseRoute(location.hash));
     window.addEventListener("hashchange", change);
     return () => window.removeEventListener("hashchange", change);
   }, []);
@@ -143,14 +137,16 @@ export function Provider({ children }: { children: ReactNode }) {
     stateRef.current = next;
     setState(next);
   }
+  useEffect(() => {
+    const target = courseForRoute(route, state);
+    if (target === "all" || ["home", "courses", "library"].includes(route.page)) setCourseId("all");
+    else if (target && user && visibleCourses(user).some((c) => c.id === target)) setCourseId(target);
+  }, [route, state.materials, state.assignments, state.submissions, user]);
   function go(r: Route) {
-    const targetCourse = r.page === "material"
-      ? stateRef.current.materials.find((m) => m.id === r.id)?.courseId
-      : r.page === "assignment" || r.page === "grading"
-        ? stateRef.current.assignments.find((a) => a.id === r.id)?.courseId
-        : undefined;
-    if (targetCourse && userRef.current && visibleCourses(userRef.current).some((c) => c.id === targetCourse)) setCourseId(targetCourse);
-    location.hash = r.page + ("id" in r ? "/" + encodeURIComponent(r.id) : "");
+    const target = courseForRoute(r, stateRef.current);
+    if (target && userRef.current && (target === "all" || visibleCourses(userRef.current).some((c) => c.id === target))) setCourseId(target);
+    if (["home", "courses", "library"].includes(r.page)) setCourseId("all");
+    location.hash = routeHash(r);
     setRoute(r);
   }
   async function login(username: string, password: string) {
@@ -185,7 +181,7 @@ export function Provider({ children }: { children: ReactNode }) {
     } catch {
       /* session remains usable in memory */
     }
-    go({ page: u.role === "teacher" ? "assignments" : "library" });
+    go({ page: "home" });
   }
   function logout() {
     epoch.current++;
@@ -213,7 +209,7 @@ export function Provider({ children }: { children: ReactNode }) {
     } catch {
       /* memory logout still applies */
     }
-    go({ page: "library" });
+    go({ page: "home" });
   }
   async function job(key: string, action: () => void | Promise<void>) {
     if (running.current.has(key)) return;
@@ -298,7 +294,7 @@ export function Provider({ children }: { children: ReactNode }) {
       return notify("请等待当前任务结束后再重置。", true);
     await clearBlobs();
     update(() => freshState());
-    go({ page: "library" });
+    go({ page: "home" });
     notify("已恢复初始演示数据。");
   }
   return (

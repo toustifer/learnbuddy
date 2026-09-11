@@ -7,6 +7,19 @@ export default defineConfig(({ mode }) => {
   return {
   plugins: [react()],
   base: "/learnbuddy/",
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            { name: "react", test: /node_modules\/(?:react|react-dom|scheduler)\//, priority: 30 },
+            { name: "motion", test: /node_modules\/(?:motion|framer-motion|motion-dom|motion-utils)\//, priority: 20 },
+            { name: "ui", test: /node_modules\/(?:@radix-ui|radix-ui|@floating-ui)\//, priority: 10 },
+          ],
+        },
+      },
+    },
+  },
   server: {
     port: 5178,
     strictPort: true,

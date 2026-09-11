@@ -15,7 +15,9 @@
     "dev:dsh": "node dsh-ui/preview.mjs"
   },
   "dependencies": {
+    "@radix-ui/themes": "^3.3.0",
     "lucide-react": "1.43.0",
+    "motion": "^13.2.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
