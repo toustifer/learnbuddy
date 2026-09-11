@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { MaterialParserService } from "../services/material-parser.js";
 import { MaterialContextService } from "../services/material-context.js";
 import { DshContextBridgeService } from "../services/dsh-context-bridge.js";
+import { AutoGraderPipelineService } from "../services/autograder-pipeline.js";
 import { AutoGraderEngine } from "../services/grader.js";
 import { MultimodalLLMClient } from "../services/llm.js";
 import { DatabaseStore } from "../db/store.js";
@@ -171,6 +172,12 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
   const storage = options.storage || defaultStorage;
   const materialContextService = options.materialContextService || new MaterialContextService(store);
   const dshBridgeService = options.dshBridgeService || new DshContextBridgeService({ store, materialContextService });
+  const autoGraderPipeline = options.autoGraderPipeline || new AutoGraderPipelineService({
+    store,
+    storage,
+    llmClient,
+    graderEngine: autoGrader
+  });
 
   const readRawBody = async (req) => {
     return new Promise((resolve, reject) => {
@@ -713,6 +720,84 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
       });
 
       return sendJson(res, 200, gradeResult);
+    }
+
+    // ==========================================
+    // 7.1 AutoGrader 状态机驱动单份报告智能评阅
+    // ==========================================
+    if (req.method === "POST" && pathname === "/api/learnbuddy/grader/grade-submission") {
+      const body = await parseJsonBody(req);
+      const { submissionId, options: gradeOptions = {} } = body;
+
+      if (!submissionId) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: "缺少必要参数: submissionId"
+        });
+      }
+
+      try {
+        const result = await autoGraderPipeline.gradeSubmission(submissionId, gradeOptions);
+        return sendJson(res, 200, result);
+      } catch (err) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: err.message
+        });
+      }
+    }
+
+    // ==========================================
+    // 7.2 AutoGrader 全班批量报告受控并发评阅
+    // ==========================================
+    if (req.method === "POST" && pathname === "/api/learnbuddy/grader/batch") {
+      const body = await parseJsonBody(req);
+      const { assignmentId, concurrency, options: batchOptions = {} } = body;
+
+      if (!assignmentId) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: "缺少必要参数: assignmentId"
+        });
+      }
+
+      try {
+        const result = await autoGraderPipeline.gradeBatchSubmissions(assignmentId, {
+          concurrency: concurrency || batchOptions.concurrency || 2,
+          ...batchOptions
+        });
+        return sendJson(res, 200, result);
+      } catch (err) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: err.message
+        });
+      }
+    }
+
+    // ==========================================
+    // 7.3 AutoGrader 失败报告重新发起评阅 (Retry)
+    // ==========================================
+    if (req.method === "POST" && pathname === "/api/learnbuddy/grader/retry") {
+      const body = await parseJsonBody(req);
+      const { submissionId, options: retryOptions = {} } = body;
+
+      if (!submissionId) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: "缺少必要参数: submissionId"
+        });
+      }
+
+      try {
+        const result = await autoGraderPipeline.retryGrading(submissionId, retryOptions);
+        return sendJson(res, 200, result);
+      } catch (err) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: err.message
+        });
+      }
     }
 
     if (next) next();

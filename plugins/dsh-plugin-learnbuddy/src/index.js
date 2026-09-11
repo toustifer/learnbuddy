@@ -10,6 +10,13 @@ export {
   createBridgeResponse,
   DEFAULT_MAX_CONTEXT_LENGTH
 } from "./services/dsh-context-bridge.js";
+export {
+  AutoGraderPipelineService,
+  DEFAULT_NETWORK_RUBRIC,
+  SAMPLE_STUDENT_REPORTS,
+  extractReportContent,
+  calculateGradesAndTotal
+} from "./services/autograder-pipeline.js";
 
 /**
  * LearnBuddy Cordis/DSH Plugin

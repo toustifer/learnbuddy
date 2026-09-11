@@ -89,7 +89,7 @@ function mapSubmission(row) {
     grades: row.grades ? JSON.parse(row.grades) : [],
     summary: row.summary || "",
     history: row.history ? JSON.parse(row.history) : [],
-    failure: row.failure || undefined
+    failure: row.failure ?? null
   };
 }
 
@@ -603,6 +603,22 @@ export class DatabaseStore {
         return s;
       });
     }
+  }
+
+  listSubmissions(assignmentId = null) {
+    if (assignmentId) {
+      const stmt = this.db.prepare(`
+        SELECT * FROM submissions
+        WHERE assignment_id = ?
+        ORDER BY submitted_at DESC, id ASC
+      `);
+      return stmt.all(assignmentId).map(mapSubmission);
+    }
+    const stmt = this.db.prepare(`
+      SELECT * FROM submissions
+      ORDER BY submitted_at DESC, id ASC
+    `);
+    return stmt.all().map(mapSubmission);
   }
 
   updateSubmission(id, patch) {
