@@ -11,14 +11,13 @@ import {
 } from "lucide-react";
 import { useStore } from "../store-context";
 import { validateFile, visibleCourses, visibleMaterials } from "../domain";
-import { courses, users } from "../seed";
+import { courses } from "../seed";
 import { LIVE_MODE, uploadMaterial, parseErrorText } from "../api";
 import { saveBlob } from "../storage";
 import {
   CourseBadge,
   Empty,
   FileIcon,
-  MiniArt,
   Modal,
   PageHeading,
   SectionHeading,
@@ -211,7 +210,6 @@ export function Library() {
     user,
     go,
     courseId,
-    setCourseId,
     materialsLoading,
     materialsError,
     refreshMaterials,
@@ -223,7 +221,6 @@ export function Library() {
     setSearch("");
     setFilter("all");
   }, [courseId]);
-  const myCourses = visibleCourses(user!);
   const all = visibleMaterials(state, user!);
   const materials = all.filter(
     (m) =>
@@ -274,59 +271,20 @@ export function Library() {
             ? "TEACHING, WITH CLARITY"
             : "A LITTLE MORE UNDERSTANDING"
         }
-        title={course ? course.title : "课程资料"}
+        title={user!.role === "teacher" ? "教学资料" : "课程学习"}
         description={
           user!.role === "teacher"
-            ? "把材料整理好，让每一次讲解都有据可依。"
-            : "你的课件、笔记与问题，在这里慢慢连成知识。"
+            ? "管理课程课件、备课提纲与答疑内容。"
+            : "阅读课程资料，整理笔记，向学习助手提问。"
         }
         action={
           <button className="button primary" onClick={() => setUpload(true)}>
             <Plus size={16} />
-            添加资料
+            {user!.role === "teacher" ? "上传教学资料" : "上传我的笔记"}
           </button>
         }
       />
-      {!course && (
-        <div className="course-cards">
-          {myCourses
-            .filter((c) => !course || c.id === courseId)
-            .map((c) => (
-              <button
-                key={c.id}
-                className={
-                  "course-card " +
-                  c.color +
-                  (courseId === c.id ? " selected" : "")
-                }
-                onClick={() => setCourseId(c.id)}
-              >
-                <span className="course-card-code">
-                  {c.code}
-                  <ChevronRight size={14} />
-                </span>
-                <strong>{c.title}</strong>
-                <p>{c.description}</p>
-                <div className="course-card-footer">
-                  <span>
-                    {all.filter((m) => m.courseId === c.id).length} 份资料
-                  </span>
-                  <span className="dot-separator" />
-                  <span>
-                    {users.find((u) => u.id === c.teacherId)!.name} 老师
-                  </span>
-                </div>
-                <MiniArt variant={c.id} />
-              </button>
-            ))}
-        </div>
-      )}
-      {course && (
-        <button className="text-button" onClick={() => setCourseId("all")}>
-          查看全部课程
-        </button>
-      )}
-      {pinned && courseId === "all" && (
+      {pinned && user!.role === "student" && (courseId === "all" || pinned.courseId === courseId) && (
         <button
           className="continue-strip"
           onClick={() => go({ page: "material", id: pinned.id })}
@@ -346,7 +304,7 @@ export function Library() {
         </button>
       )}
       <SectionHeading
-        title={course ? "课程材料" : "所有资料"}
+        title={course ? course.title : "课程资料"}
         count={materials.length}
       />
       <div className="list-toolbar">
@@ -361,14 +319,14 @@ export function Library() {
             className={filter === "course" ? "active" : ""}
             onClick={() => setFilter("course")}
           >
-            老师共享
+            {user!.role === "teacher" ? "已共享课件" : "老师共享"}
           </button>
           <button
             className={filter === "private" ? "active" : ""}
             onClick={() => setFilter("private")}
           >
             <LockKeyhole size={12} />
-            我的私有资料
+            {user!.role === "teacher" ? "个人备课" : "我的笔记"}
           </button>
         </div>
         <div className="search-field compact">
@@ -386,13 +344,6 @@ export function Library() {
           )}
         </div>
       </div>
-      <p className="filter-explanation">
-        {filter === "private"
-          ? "仅显示你上传且设为私有的资料。"
-          : filter === "course"
-            ? "显示教师向本课程师生共享的资料。"
-            : "显示当前课程范围内，你有权查看的共享与私有资料。"}
-      </p>
       <div className="material-table">
         {" "}
         <div className="material-table-head">
@@ -417,7 +368,7 @@ export function Library() {
                     <>
                       {" "}
                       · <LockKeyhole size={10} />
-                      我的私有资料
+                      {user!.role === "teacher" ? "个人备课" : "我的笔记"}
                     </>
                   )}
                   {m.sampleKey && " · 教学样例"}
@@ -466,7 +417,7 @@ export function Library() {
       <div className="list-footer">
         <span>
           <LockKeyhole size={12} />
-          个人上传的资料仅自己可见；教师共享资料对本课程开放。
+          {user!.role === "teacher" ? "共享课件对课程师生开放，个人备课仅自己可见。" : "你上传的笔记仅自己可见。"}
         </span>
         <span>{materials.length} 份资料</span>
       </div>

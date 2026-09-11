@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileText, LoaderCircle, Plus, RefreshCw } from "lucide-react";
 import { LIVE_MODE, getMaterialContext } from "../api";
-import { VoiceInput } from "./VoiceInput";
 import { buildDshHandoff, embeddedDshUrl, sendToDsh } from "../dsh";
 import { chatKey } from "../domain";
 import { useStore } from "../store-context";
-import { Brand, Modal, FileIcon } from "../ui";
+import { Modal, FileIcon } from "../ui";
 import { visibleMaterials } from "../domain";
 import type { ChatReference, Material, Submission } from "../types";
 
@@ -40,7 +39,6 @@ function EmbeddedAssistant({
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState(0);
-  const [voiceDraft, setVoiceDraft] = useState("");
   const [picker, setPicker] = useState(false);
   const [contextStatus, setContextStatus] = useState("");
   const [handoff, setHandoff] = useState(() =>
@@ -168,24 +166,13 @@ function EmbeddedAssistant({
 
   return (
     <div className="chat-panel dsh-assistant">
-      <div className="assistant-heading">
-        <span className="assistant-avatar">
-          <Brand small />
-        </span>
-        <div>
-          <strong>{report ? "反馈解读" : "学习助手"}</strong>
-          <span>读到哪里，就从哪里开始问</span>
-        </div>
-        <span className="dsh-preview-label">
-          {LIVE_MODE ? "DSH 会话" : "本地预览"}
-        </span>
-      </div>
       <div className="dsh-embed-wrap">
         <iframe
           key={attempt}
           ref={iframe}
           src={target.href}
-          title="LearnBuddy 学习对话"
+          title="LearnBuddy DSH 对话"
+          allow="microphone"
           className="dsh-embed"
           onLoad={() => setLoaded((n) => n + 1)}
         />
@@ -199,6 +186,7 @@ function EmbeddedAssistant({
             ) : (
               <>
                 <p>{error}</p>
+                <p className="inline-note">若刚重启本机服务，请先在当前浏览器打开启动时显示的 DSH 登录链接，再重新连接。</p>
                 <button
                   className="button secondary"
                   onClick={() => setAttempt((n) => n + 1)}
@@ -224,41 +212,6 @@ function EmbeddedAssistant({
         )}
         <span role="status">{contextStatus}</span>
       </div>
-      <div className="dsh-voice-draft">
-        <VoiceInput
-          disabled={status !== "ready"}
-          onText={(text) => setVoiceDraft((previous) => previous + text)}
-        />
-        {voiceDraft && (
-          <>
-            <textarea
-              aria-label="DSH 听写草稿"
-              value={voiceDraft}
-              onChange={(event) => setVoiceDraft(event.target.value)}
-            />
-            <button
-              className="text-button"
-              disabled={status !== "ready"}
-              onClick={() => {
-                setHandoff(
-                  buildDshHandoff({
-                    material,
-                    report,
-                    references: [],
-                    question: voiceDraft,
-                  }),
-                );
-                setVoiceDraft("");
-              }}
-            >
-              将问题带入 DSH 草稿
-            </button>
-          </>
-        )}
-      </div>
-      <p className="dsh-preview-note">
-        引用与听写不会自动发送；请在 DSH 输入框中核对后发送。
-      </p>
       {picker && (
         <Modal
           title="引用课程资料"

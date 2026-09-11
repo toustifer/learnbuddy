@@ -6,12 +6,12 @@ const embedded =
   new URL(location.href).searchParams.get("learnbuddy") === "embedded";
 
 const tokens = {
-  "--dsw-alias-bg-base": { light: "#fcfcf9", dark: "#191d19" },
+  "--dsw-alias-bg-base": { light: "#ffffff", dark: "#191d19" },
   "--dsw-alias-bg-layer-1": { light: "#ffffff", dark: "#222822" },
-  "--dsw-alias-bg-layer-2": { light: "#f0f3eb", dark: "#2a3229" },
+  "--dsw-alias-bg-layer-2": { light: "#f4f6f5", dark: "#2a3229" },
   "--dsw-alias-bg-overlay": { light: "#ffffff", dark: "#262d25" },
   "--dsw-specific-sidebar-fill": { light: "#f1f3ed", dark: "#171c17" },
-  "--dsw-alias-brand-primary": { light: "#597445", dark: "#afcd94" },
+  "--dsw-alias-brand-primary": { light: "#28785a", dark: "#afcd94" },
   "--dsw-alias-brand-text": { light: "#506e3d", dark: "#bad9a3" },
   "--dsw-alias-button-primary-fill": { light: "#597445", dark: "#afcd94" },
   "--dsw-alias-button-primary-hover": { light: "#4a6636", dark: "#c0dda8" },
@@ -103,6 +103,25 @@ body.lb-dsh-embedded .lb-dsh-context details{margin-top:3px}
 .lb-dsh-guide h3{font-size:14px;font-weight:550;margin:0 0 7px}
 .lb-dsh-guide p{font-size:12px;line-height:1.8;color:var(--dsw-alias-label-secondary);margin:0}
 @media(max-width:600px){.lb-dsh-landing{padding:27px 20px}.lb-dsh-guide{gap:12px}.lb-dsh-context-head{align-items:flex-start}.lb-dsh-name{font-size:15px}}
+
+/* Embedded reading mode: one conversation, one composer, one compact reference. */
+body.lb-dsh-embedded [data-slot="conversation.session.header"] {display:none!important}
+body.lb-dsh-embedded .lb-dsh-hero{padding:22px 18px 12px;gap:6px;align-items:flex-start;text-align:left}
+body.lb-dsh-embedded .lb-dsh-hero .lb-dsh-mark{display:none}
+body.lb-dsh-embedded .lb-dsh-hero h2{font-size:16px;line-height:1.55;font-weight:600;max-width:none;letter-spacing:0}
+body.lb-dsh-embedded .lb-dsh-hero p{font-size:12px;max-width:none;line-height:1.7}
+body.lb-dsh-embedded [data-slot="conversation.composer.bar"] [role="textbox"]{font-size:14px;line-height:1.65;min-height:56px;max-height:150px}
+body.lb-dsh-embedded [data-slot="conversation.input.dock"] .lb-dsh-context{padding:7px 9px;margin:0 10px 5px;border-radius:7px;background:var(--dsw-alias-bg-layer-2);border:0}
+.lb-dsh-context details{min-width:0;flex:1;margin:0}
+.lb-dsh-context summary{cursor:pointer;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;color:var(--dsw-alias-label-primary)}
+.lb-dsh-context-actions{margin:2px 0 0;gap:8px}
+.lb-dsh-context-actions .lb-dsh-action{padding:4px 0;font-size:11px}
+.lb-dsh-context .lb-dsh-context-head>.lb-dsh-action{padding:2px 4px;line-height:1}
+.lb-dsh-voice{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 12px 6px;font-size:11px;color:var(--dsw-alias-label-secondary)}
+.lb-dsh-voice button{display:inline-flex;align-items:center;gap:5px;border:0;background:none;color:var(--dsw-alias-label-secondary);font:inherit;padding:5px 2px;cursor:pointer}
+.lb-dsh-voice button[aria-pressed="true"]{color:#a23d3d}
+.lb-dsh-voice button:disabled{opacity:.5;cursor:wait}
+.lb-dsh-voice span{line-height:1.6}
 `;
 
 function Mark({ size = 28, className = "" }) {
@@ -373,7 +392,7 @@ exports.apply = function apply(ctx) {
       h(
         "div",
         { className: "lb-dsh-context-head" },
-        h("strong", null, value.title),
+        h("details", null, h("summary", { title: value.title }, `引用 · ${value.title}`), h("pre", null, value.text)),
         h(
           "button",
           {
@@ -383,13 +402,6 @@ exports.apply = function apply(ctx) {
           },
           "×",
         ),
-      ),
-      h("p", null, "当前引用已就绪，可加入问题后继续编辑。"),
-      h(
-        "details",
-        null,
-        h("summary", null, "查看带入内容"),
-        h("pre", null, value.text),
       ),
       actions,
     );
@@ -470,12 +482,34 @@ exports.apply = function apply(ctx) {
       ),
     );
   }
+  function NativeVoice({ draft, inputActions, disabled }) {
+    const [phase, setPhase] = React.useState("idle");
+    const [hint, setHint] = React.useState("");
+    const current = React.useRef({ draft, inputActions });
+    current.current = { draft, inputActions };
+    const controller = React.useRef(null);
+    React.useEffect(() => {
+      controller.current = createDictation({ onState: setPhase, onError: setHint, onText: (text) => {
+        current.current.inputActions.setDraft([current.current.draft, text].filter(Boolean).join("\n"));
+        setHint("已填入输入框");
+      }});
+      return () => controller.current?.destroy();
+    }, []);
+    React.useEffect(() => { if (disabled) controller.current?.stop(); }, [disabled]);
+    return h("div", { className: "lb-dsh-voice" }, h("button", {
+      type: "button", disabled: disabled || phase === "requesting" || phase === "transcribing",
+      "aria-pressed": phase === "recording", title: "免费本地语音转写，最长 60 秒",
+      onClick: () => { setHint(""); if (phase === "recording") controller.current?.stop(); else void controller.current?.start(); },
+    }, h("svg", { width: 13, height: 13, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.7, "aria-hidden": true },
+      h("rect", { x: 9, y: 2, width: 6, height: 12, rx: 3 }), h("path", { d: "M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" })),
+    phase === "recording" ? "结束录音" : phase === "transcribing" ? "正在转写…" : phase === "requesting" ? "打开麦克风…" : "语音输入"), hint && h("span", { role: "status" }, hint));
+  }
   function Dock({ useMaterial, useInput, inputActions }) {
     const value = useMaterial((x) => x);
     const draft = useInput((s) => s.draft);
     const phase = useInput((s) => s.phase);
     const [inserted, setInserted] = React.useState(null);
-    return h(ContextCard, {
+    return h(React.Fragment, null, h(ContextCard, {
       value,
       actions:
         value &&
@@ -494,11 +528,11 @@ exports.apply = function apply(ctx) {
                 setInserted(value.requestId);
               },
             },
-            inserted === value.requestId ? "已插入输入框" : "引用到当前问题",
+            inserted === value.requestId ? "已加入问题" : "加入当前问题",
           ),
           h(ReturnLink, {}),
         ),
-    });
+    }), h(NativeVoice, { draft, inputActions, disabled: phase !== "plain" }));
   }
   const register = (name, options, component) =>
     ctx.slots.inject(name, () =>
@@ -514,8 +548,8 @@ exports.apply = function apply(ctx) {
       "div",
       { className: "lb-dsh-hero" },
       h(Mark, { size: embedded ? 34 : 42 }),
-      h("h2", null, "一起把问题想明白"),
-      h("p", null, "从一句原文、一张图开始，找到理解这份材料的线索。"),
+      h("h2", null, embedded ? "围绕这份材料继续讨论" : "一起把问题想明白"),
+      h("p", null, embedded ? "带入原文，也可以直接写下问题。" : "从原文出发，逐步理解。"),
     ),
   );
   if (globalThis.__LEARNBUDDY_UI__?.previewWorkspace) {
@@ -568,7 +602,7 @@ exports.apply = function apply(ctx) {
   register(
     "conversation.composer.dock",
     { id: "learnbuddy-runtime", order: 100 },
-    () =>
+    () => embedded ? null :
       h(
         "div",
         { className: "lb-dsh-status" },

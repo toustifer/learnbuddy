@@ -1,5 +1,7 @@
 # 前端接口接入与交互修正 2026年9月12日
 
+> 后续同日已完成师生工作台与 DSH 改版，并补充工作台读取、作业表单和本机语音服务。本文件保留首次接入时的历史证据；当前状态以 [改版记录](FRONTEND_REDESIGN-2026-09-12.md) 为准。
+
 本轮已形成可本地验收的前端版本：默认连接服务器课件、原文、答疑和教学统计，并接入已有评阅接口。尚未部署到公网，不代表完整教学闭环或两个赛题已经完成。
 
 依据：先阅读嘉俊的 [对接指南](https://github.com/toustifer/learnbuddy/blob/ff3ba14/docs/FRONTEND_INTEGRATION_GUIDE.md)，再核对 [接口参考](https://github.com/toustifer/learnbuddy/blob/ff3ba14/docs/API.md)；仓库主分支快照为 `ff3ba14`。Word 中的截图与评论作为建议材料，以下实现选择由本轮结合已确认需求作出。

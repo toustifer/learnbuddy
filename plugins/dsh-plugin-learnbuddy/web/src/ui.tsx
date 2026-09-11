@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { courses } from "./seed";
 import { getBlob } from "./storage";
+import { useStore } from "./store-context";
 import type { Material, Submission } from "./types";
 
 export function Brand({ small = false }: { small?: boolean }) {
@@ -47,7 +48,8 @@ export function Brand({ small = false }: { small?: boolean }) {
   );
 }
 export function CourseBadge({ id }: { id: string }) {
-  const c = courses.find((c) => c.id === id) || { title: id, color: "green" };
+  const { user } = useStore();
+  const c = (user?.courses || courses).find((c) => c.id === id) || { title: id, color: "green" };
   return (
     <span className={"course-badge " + c.color}>
       <span className="course-dot" />

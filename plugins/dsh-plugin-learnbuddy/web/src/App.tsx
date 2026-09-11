@@ -6,7 +6,6 @@ import {
   ChevronRight,
   CircleHelp,
   ClipboardList,
-  GraduationCap,
   LogOut,
   Menu,
   Search,
@@ -18,15 +17,14 @@ import { Provider } from "./context";
 import { useStore } from "./store-context";
 import { visibleCourses, visibleMaterials } from "./domain";
 import { LIVE_MODE } from "./api";
-import { courses, users } from "./seed";
+import { users } from "./seed";
 import { Brand, CourseBadge, FileIcon, MiniArt, Modal } from "./ui";
 import {
-  OnlineAssignments,
-  OnlineAssignment,
   OnlineGrading,
   OnlineInsights,
 } from "./pages/Online";
-import { Empty } from "./ui";
+import { AcademicAssignments, OnlineReport } from "./pages/Academic";
+import { OnlineAssignmentForm } from "./pages/AssignmentForm";
 import { Library } from "./pages/Library";
 import { MaterialWorkspace } from "./pages/Material";
 import {
@@ -36,6 +34,8 @@ import {
   ReportWorkspace,
   Insights,
 } from "./pages/Assignments";
+
+const LOCAL_SERVICE = import.meta.env.VITE_DATA_SOURCE === "local";
 
 function Login() {
   const { login } = useStore();
@@ -175,7 +175,7 @@ function Login() {
             全部账号密码为 123，user / 123 也可进入。
             <br />
             {LIVE_MODE
-              ? "使用演示账号连接服务器；课件来源与回答降级状态会在页面标注。"
+              ? LOCAL_SERVICE ? "本机独立教学样例库；课程与人物均为虚构示例。" : "使用教学演示账号；课件与回答来源会在页面标注。"
               : "课程与人物均为虚构示例；数据只保存在当前浏览器。"}
           </p>
         </div>
@@ -245,19 +245,19 @@ function Shell() {
       : "assignments";
   const title =
     navPage === "library"
-      ? "课程资料"
+      ? user.role === "teacher" ? "教学资料" : "课程学习"
       : navPage === "insights"
-        ? "教学反馈"
-        : "作业与报告";
+        ? "学情分析"
+        : user.role === "teacher" ? "作业管理" : "我的作业";
   const routeCourseId =
     route.page === "material"
       ? state.materials.find((m) => m.id === route.id)?.courseId
       : ["assignment", "grading"].includes(route.page) && "id" in route
         ? state.assignments.find((a) => a.id === route.id)?.courseId
         : courseId;
-  const course = courses.find((c) => c.id === routeCourseId);
+  const course = myCourses.find((c) => c.id === routeCourseId);
   return (
-    <div className="app-shell">
+    <div className={`app-shell role-${user.role}`}>
       {mobileOpen && (
         <button
           className="sidebar-backdrop"
@@ -280,11 +280,16 @@ function Shell() {
             <X size={17} />
           </button>
         </div>
-        <div className="workspace-label">
-          <GraduationCap size={14} />
-          我的{user.role === "teacher" ? "教学" : "学习"}空间
-          <span>{LIVE_MODE ? "在线" : "DEMO"}</span>
-        </div>
+        <label className="course-switcher">
+          <span>{user.role === "teacher" ? "任教课程" : "我的课程"}</span>
+          <select aria-label="切换课程" value={courseId} onChange={(event) => {
+            setCourseId(event.target.value);
+            go({ page: navPage });
+          }}>
+            <option value="all">全部课程</option>
+            {myCourses.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
+          </select>
+        </label>
         <button
           className="sidebar-search"
           onClick={() => {
@@ -302,14 +307,14 @@ function Shell() {
             onClick={() => go({ page: "library" })}
           >
             <BookOpen size={17} />
-            课程资料
+            {user.role === "teacher" ? "教学资料" : "课程学习"}
           </button>
           <button
             className={navPage === "assignments" ? "active" : ""}
             onClick={() => go({ page: "assignments" })}
           >
             <ClipboardList size={17} />
-            作业与报告
+            {user.role === "teacher" ? "作业管理" : "我的作业"}
           </button>
           {user.role === "teacher" && (
             <button
@@ -317,45 +322,14 @@ function Shell() {
               onClick={() => go({ page: "insights" })}
             >
               <TrendingUp size={17} />
-              教学反馈
+              学情分析
             </button>
           )}
-        </nav>
-        <div className="sidebar-section-title">
-          按课程筛选<span>{myCourses.length}</span>
-        </div>
-        <p className="sidebar-scope-note">筛选当前的{title}</p>
-        <nav className="course-nav" aria-label="课程筛选">
-          <button
-            className={courseId === "all" ? "selected" : ""}
-            onClick={() => {
-              setCourseId("all");
-              go({ page: navPage });
-            }}
-          >
-            <span className="all-course-icon">▦</span>全部课程
-          </button>
-          {myCourses.map((c) => (
-            <button
-              key={c.id}
-              className={courseId === c.id ? "selected" : ""}
-              onClick={() => {
-                setCourseId(c.id);
-                go({ page: navPage });
-              }}
-            >
-              <span className={"course-square " + c.color}>
-                {c.title.slice(0, 1)}
-              </span>
-              {c.title}
-            </button>
-          ))}
         </nav>
         <div className="sidebar-bottom">
           <button className="help-button" onClick={() => setModal("about")}>
             <CircleHelp size={15} />
-            演示说明
-            <span className="subtle-dot" />
+            使用说明
           </button>
           <button
             className="profile-button"
@@ -386,17 +360,13 @@ function Shell() {
               <Menu size={19} />
             </button>
             <button
-              onClick={() => {
-                setCourseId("all");
-                go({ page: "library" });
-              }}
+              onClick={() => go({ page: user.role === "teacher" ? "assignments" : "library" })}
             >
               {user.role === "teacher" ? "教学空间" : "学习空间"}
             </button>
             <ChevronRight size={12} />
             <button
               onClick={() => {
-                setCourseId("all");
                 go({ page: navPage });
               }}
             >
@@ -419,8 +389,7 @@ function Shell() {
           </div>
           <button className="demo-pill" onClick={() => setModal("about")}>
             <span />
-            {LIVE_MODE ? "服务器接入" : "本地演示"}
-            <span className="desktop-only"> · 查看数据说明</span>
+            {LIVE_MODE ? LOCAL_SERVICE ? "本机预览" : "在线" : "演示数据"}
           </button>
         </header>
         <main
@@ -436,10 +405,10 @@ function Shell() {
           {route.page === "library" && <Library />}
           {route.page === "material" && <MaterialWorkspace id={route.id} />}
           {route.page === "assignments" &&
-            (LIVE_MODE ? <OnlineAssignments /> : <Assignments />)}
+            (LIVE_MODE ? <AcademicAssignments /> : <Assignments />)}
           {route.page === "assignment" &&
             (LIVE_MODE ? (
-              <OnlineAssignment id={route.id} />
+              <OnlineAssignmentForm id={route.id} />
             ) : (
               <AssignmentEditor id={route.id} />
             ))}
@@ -451,10 +420,7 @@ function Shell() {
             ))}
           {route.page === "report" &&
             (LIVE_MODE ? (
-              <Empty
-                title="报告详情查询尚未开放"
-                description="请从评阅管理查看本次操作返回的结果。"
-              />
+              <OnlineReport id={route.id} />
             ) : (
               <ReportWorkspace id={route.id} />
             ))}
@@ -491,9 +457,7 @@ function Shell() {
                     {u.name} · {u.role === "teacher" ? "教师" : "学生"}
                   </strong>
                   <small>
-                    {visibleCourses(u)
-                      .map((c) => c.title)
-                      .join(" / ")}
+                    {u.username}
                   </small>
                 </span>
                 {user.id === u.id ? (
@@ -534,7 +498,7 @@ function Shell() {
             {visibleMaterials(state, user)
               .filter((m) =>
                 (
-                  m.title + courses.find((c) => c.id === m.courseId)?.title
+                  m.title + myCourses.find((c) => c.id === m.courseId)?.title
                 ).includes(search),
               )
               .map((m) => (
@@ -564,11 +528,11 @@ function Shell() {
         >
           <div className="about-content">
             <p>
-              你可以切换账号、浏览课程资料、引用图文提问、准备答疑卡和作业标准，再体验提交、批量评阅、教师复核和反馈。
+              教师可管理作业、查看学生提交与成绩、复核和发布已有评分；学生可阅读课程资料，查看自己的任务、提交记录与已发布反馈。
             </p>
             <p>
               {LIVE_MODE
-                ? "课件、原文和伴学问答从服务器获取；课程目录为对接指南的固定条目。课程、作业和提交列表接口尚未提供；回答会明确标注教师答疑卡、模型回答或降级。"
+                ? `${LOCAL_SERVICE ? "当前连接本机独立教学样例库。" : "当前连接教学服务。"}课程、作业、名单和提交记录来自数据库；新报告接收与完整性检查仍待接入。未配置模型时，答疑明确显示降级状态。`
                 : "课程、人物、课件和报告为虚构教学示例。文件和模拟结果保存在当前浏览器。"}
             </p>
             <p>

@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, RefreshCw } from "lucide-react";
+import { ArrowLeft, ArrowRight, RefreshCw, Search } from "lucide-react";
 import { request, fileUrl, ApiError } from "../api";
 import { visibleAssignments, visibleCourses } from "../domain";
 import { useStore } from "../store-context";
-import { CourseBadge, Empty, PageHeading } from "../ui";
+import { Empty, PageHeading } from "../ui";
 import type { Rubric, ServerGrade, ServerReview } from "../types";
 import { VoiceInput } from "../components/VoiceInput";
+import { CourseOverview, dateLabel, latestSubmission, scoreOf, SubmissionStatus } from "./Academic";
 
 export interface AssignmentAnalytics {
   assignmentId: string;
@@ -106,134 +107,6 @@ function QueryNotice({
   return null;
 }
 
-export function OnlineAssignments() {
-  const { state, user, courseId, go } = useStore();
-  const assignments = visibleAssignments(state, user!).filter(
-    (a) => courseId === "all" || a.courseId === courseId,
-  );
-  return (
-    <div className="page">
-      <PageHeading
-        title="作业与报告"
-        eyebrow="ASSIGNMENTS"
-        description="从课程实验出发，查看任务要求与评阅反馈。"
-      />
-      <p className="integration-note">
-        当前任务目录来自团队提供的固定演示条目。服务器尚未开放作业列表、报告提交与成绩明细查询；这里不显示推测的提交状态或成绩。
-      </p>
-      <div className="online-assignment-list">
-        {assignments.map((assignment) => (
-          <article key={assignment.id}>
-            <CourseBadge id={assignment.courseId} />
-            <h2>{assignment.title}</h2>
-            <p>{assignment.description}</p>
-            <div className="online-actions">
-              <button
-                className="button secondary"
-                onClick={() => go({ page: "assignment", id: assignment.id })}
-              >
-                查看任务要求
-                <ArrowRight size={15} />
-              </button>
-              {user!.role === "teacher" && (
-                <button
-                  className="button primary"
-                  onClick={() => go({ page: "grading", id: assignment.id })}
-                >
-                  进入评阅管理
-                </button>
-              )}
-            </div>
-          </article>
-        ))}
-      </div>
-      {!assignments.length && <Empty title="当前课程暂无已配置的演示作业" />}
-      {user!.role === "student" && (
-        <div className="parse-notice">
-          <strong>报告提交与提交门禁等待服务接入</strong>
-          <p>
-            后续会检查是否交错作业、任务点是否完整，并把异常状态同步给老师。目前不会把文件上传到资料库冒充提交报告。
-          </p>
-          <button className="button secondary" disabled>
-            提交报告暂不可用
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-export function OnlineAssignment({ id }: { id: string }) {
-  const { state, user, go } = useStore();
-  const assignment = visibleAssignments(state, user!).find((a) => a.id === id);
-  const [draft, setDraft] = useState("");
-  if (!assignment) return <Empty title="无法查看这份作业" />;
-  return (
-    <div className="page">
-      <button
-        className="text-button"
-        onClick={() => go({ page: "assignments" })}
-      >
-        <ArrowLeft size={14} />
-        返回作业列表
-      </button>
-      <PageHeading
-        title={assignment.title}
-        eyebrow="EXPERIMENT"
-        description="团队提供的任务样例；服务器任务配置接口待开放。"
-      />
-      <CourseBadge id={assignment.courseId} />
-      <p className="assignment-description">{assignment.description}</p>
-      <h2>任务要求与评分标准样例</h2>
-      <div className="online-rubric-list">
-        {assignment.rubric.map((item) => (
-          <article key={item.id}>
-            <strong>{item.title}</strong>
-            <span>{item.max} 分</span>
-            <p>{item.criterion}</p>
-          </article>
-        ))}
-      </div>
-      {user!.role === "teacher" && (
-        <>
-          <label>
-            新的实验安排草稿
-            <textarea
-              rows={5}
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              placeholder="写下实验目标、任务点与报告要求…"
-            />
-          </label>
-          <VoiceInput
-            onText={(text) => setDraft((previous) => previous + text)}
-          />
-          <p className="inline-note">
-            草稿仅在当前页面保留；创建、修改和发布任务接口尚未开放。
-          </p>
-          <button
-            className="button primary"
-            onClick={() => go({ page: "grading", id })}
-          >
-            评阅已有提交
-          </button>
-        </>
-      )}
-    </div>
-  );
-}
-
-const demoSubmissions: Record<string, { id: string; label: string }[]> = {
-  "lab-tcp": [
-    { id: "sub-zhou-net", label: "周可 · 计网演示提交" },
-    { id: "sub-xu-net", label: "许然 · 计网演示提交" },
-  ],
-  "lab-os": [
-    { id: "sub-xu-os", label: "许然 · 操作系统演示提交" },
-    { id: "sub-yi-os", label: "林一 · 操作系统演示提交" },
-  ],
-  "lab-db": [{ id: "sub-zhou-db", label: "周可 · 数据库演示提交" }],
-};
 export function validateServerGrades(grades: ServerGrade[], rubric: Rubric[]) {
   if (
     !rubric.length ||
@@ -261,6 +134,8 @@ export function OnlineGrading({ id }: { id: string }) {
     updateReviewResults: setReviews,
     busy,
     job,
+    academic,
+    refreshAcademic,
   } = useStore();
   const assignment = visibleAssignments(state, user!).find((a) => a.id === id);
   const query = useQuery<AssignmentAnalytics>(
@@ -268,7 +143,20 @@ export function OnlineGrading({ id }: { id: string }) {
       ? `/analytics/assignment/${encodeURIComponent(id)}?skipLLM=1`
       : "",
   );
-  const [selected, setSelected] = useState(demoSubmissions[id]?.[0]?.id || "");
+  const members = academic?.roster.filter((r) => r.courseId === assignment?.courseId) || [];
+  const submissions = state.submissions.filter((s) => s.assignmentId === id);
+  const [selected, setSelected] = useState(() => {
+    try {
+      const previous = JSON.parse(sessionStorage.getItem("learnbuddy-review-selection") || "null");
+      if (previous?.assignmentId === id && submissions.some((s) => s.id === previous.submissionId)) return previous.submissionId as string;
+    } catch { /* optional selection preference */ }
+    return submissions[0]?.id || "";
+  });
+  const [studentSearch, setStudentSearch] = useState("");
+  const [studentFilter, setStudentFilter] = useState("all");
+  useEffect(() => {
+    if (!selected && submissions.length) setSelected(submissions[0].id);
+  }, [selected, submissions]);
   const [pending, setPending] = useState("");
   const running = useRef(false);
   const [error, setError] = useState("");
@@ -285,15 +173,19 @@ export function OnlineGrading({ id }: { id: string }) {
   } | null>(null);
   const [confirmBatch, setConfirmBatch] = useState(false);
   const [confirmPublish, setConfirmPublish] = useState(false);
+  const saved = submissions.find((s) => s.id === selected);
+  useEffect(() => {
+    if (assignment && user!.role === "teacher" && saved?.grades.length && !reviews[selected]) {
+      setReviews((previous) => ({ ...previous, [selected]: {
+        submissionId: saved.id, status: saved.status, totalScore: scoreOf(saved) || 0,
+        maxScore: assignment!.rubric.reduce((n, r) => n + r.max, 0),
+        grades: saved.grades.map((g) => ({ ...g, score: g.score ?? NaN })), summary: saved.summary, submission: saved,
+      } }));
+    }
+  }, [selected, saved, reviews, setReviews, assignment]);
   const current = reviews[selected];
   const isBusy = !!pending || !!busy["server-grade:" + id];
-  const rubric: Rubric[] =
-    query.data?.rubricAnalytics.map((item) => ({
-      id: item.rubricId,
-      title: item.title,
-      max: item.max,
-      criterion: item.criterion,
-    })) || [];
+  const rubric: Rubric[] = assignment?.rubric || [];
   if (!assignment || user!.role !== "teacher")
     return <Empty title="仅本课程教师可评阅" />;
   async function run(
@@ -322,7 +214,7 @@ export function OnlineGrading({ id }: { id: string }) {
             action === "review-publish" &&
             (!current || !validateServerGrades(current.grades, rubric))
           )
-            throw new Error("请按服务器评分标准补齐全部合法分数。");
+            throw new Error("请按作业评分标准补齐全部有效分数。");
           const body =
             action === "review-publish"
               ? {
@@ -351,6 +243,7 @@ export function OnlineGrading({ id }: { id: string }) {
           setConfirmPublish(false);
         }
         query.retry();
+        await refreshAcademic();
       } catch (e) {
         setError(
           (e as Error).message +
@@ -384,7 +277,6 @@ export function OnlineGrading({ id }: { id: string }) {
       </button>
       <PageHeading
         title={assignment.title}
-        eyebrow="REVIEW"
         description="逐项核对报告证据，由教师确认后发布。"
       />
       <QueryNotice {...query} />
@@ -392,11 +284,11 @@ export function OnlineGrading({ id }: { id: string }) {
         <div className="online-metrics">
           <div>
             <strong>{query.data.totalSubmissions}</strong>
-            <span>服务器提交总数</span>
+            <span>已提交</span>
           </div>
           <div>
             <strong>{query.data.publishedCount}</strong>
-            <span>已发布报告</span>
+            <span>已发布反馈</span>
           </div>
           <div>
             <strong>{query.data.failedCount}</strong>
@@ -404,27 +296,19 @@ export function OnlineGrading({ id }: { id: string }) {
           </div>
         </div>
       )}
-      <p className="integration-note">
-        提交列表接口尚未开放，以下仅列出对接指南中的固定演示提交，状态未知。开始评阅、重试和发布会修改服务器记录；分数与证据只展示本次服务响应。结果会保留到退出登录或刷新页面。
-      </p>
-      <label>
-        选择已有演示提交
-        <select
-          value={selected}
-          disabled={isBusy}
-          onChange={(e) => {
-            setSelected(e.target.value);
-            setError("");
-            setConfirmPublish(false);
-          }}
-        >
-          {(demoSubmissions[id] || []).map((item) => (
-            <option value={item.id} key={item.id}>
-              {item.label}（{item.id}）
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="review-register">
+        <div className="table-controls">
+          <div className="search-field compact"><Search size={14} /><input aria-label="搜索学生" placeholder="搜索学生姓名…" value={studentSearch} onChange={(e) => setStudentSearch(e.target.value)} /></div>
+          <select className="compact-select" aria-label="筛选提交状态" value={studentFilter} onChange={(e) => setStudentFilter(e.target.value)}><option value="all">全班学生</option><option value="missing">未提交</option><option value="submitted">待评阅</option><option value="review">待复核</option><option value="published">已发布</option><option value="failed">异常</option></select>
+          <span className="table-control-actions muted">{members.length} 名学生</span>
+        </div>
+        <div className="table-scroll"><table className="data-table"><thead><tr><th>学生</th><th>提交文件</th><th>提交时间</th><th>状态</th><th className="numeric">分数</th><th>操作</th></tr></thead><tbody>
+          {members.map(({ student }) => ({ student, submission: latestSubmission(submissions, id, student.id) })).filter(({ student, submission }) => student.name.includes(studentSearch) && (studentFilter === "all" || (studentFilter === "missing" ? !submission : submission?.status === studentFilter))).map(({ student, submission }) => <tr key={student.id} className={submission?.id === selected ? "selected-row" : ""}>
+            <td><strong>{student.name}</strong><small>{student.username}</small></td><td>{submission?.fileName || "—"}{submission?.sampleKey && <small>教学样例</small>}</td><td className="cell-muted">{submission ? dateLabel(submission.submittedAt) : "—"}</td><td><SubmissionStatus teacher submission={submission && reviews[submission.id] ? { ...submission, status: reviews[submission.id].status as typeof submission.status } : submission} /></td><td className="numeric">{submission ? reviews[submission.id]?.totalScore ?? scoreOf(submission) ?? "—" : "—"}</td><td><button className="text-button" disabled={!submission || isBusy} onClick={() => { setSelected(submission!.id); setError(""); setConfirmPublish(false); }}>查看报告</button></td>
+          </tr>)}
+        </tbody></table></div>
+      </div>
+      <div className="review-selection-heading"><h2>{saved ? `${members.find((r) => r.student.id === saved.studentId)?.student.name || "学生"}的报告` : "报告评阅"}</h2>{saved && <span className="muted">{saved.fileName}</span>}</div>
       <div className="online-actions">
         <button
           className="button primary"
@@ -436,7 +320,7 @@ export function OnlineGrading({ id }: { id: string }) {
           }
           onClick={() => void run("grade-submission")}
         >
-          {pending === "grade-submission" ? "正在评阅…" : "开始服务器评阅"}
+          {pending === "grade-submission" ? "正在评阅…" : "AI 辅助评阅"}
         </button>
         <button
           className="button secondary"
@@ -448,7 +332,7 @@ export function OnlineGrading({ id }: { id: string }) {
           }
           onClick={() => void run("retry")}
         >
-          重试失败评阅
+          重试评阅
         </button>
         <button
           className="text-button"
@@ -462,7 +346,7 @@ export function OnlineGrading({ id }: { id: string }) {
         <div className="parse-notice">
           <p>
             将评阅本作业全部“已提交 /
-            失败”的报告。当前批量接口只返回汇总结果，无法继续读取每份明细；需要逐项复核时请使用单份评阅。
+            失败”的报告。完成后将更新学生列表，逐份核对后再发布反馈。
           </p>
           <button
             className="button secondary"
@@ -501,8 +385,8 @@ export function OnlineGrading({ id }: { id: string }) {
       )}
       {!current && (
         <Empty
-          title="暂无本次评阅结果"
-          description="选择一份演示提交并开始评阅。已有的历史成绩需等待提交详情接口开放后读取。"
+          title={saved ? "报告尚未评阅" : "选择一份学生报告"}
+          description={saved ? "AI 辅助评阅需要已配置模型；最终分数与反馈由老师复核。" : "先从上方学生列表选择要查看的报告。"}
         />
       )}
       {current && (
@@ -511,17 +395,17 @@ export function OnlineGrading({ id }: { id: string }) {
             {current.status === "published"
               ? "成绩已发布"
               : current.status === "review"
-                ? "服务器评阅结果 · 待教师复核"
+                ? "评分复核"
                 : "评阅未完成"}
           </h2>
           <p>
-            返回总分：{current.totalScore} / {current.maxScore}
+            建议总分：{current.totalScore} / {current.maxScore}
             {current.reviewVersion
               ? ` · 第 ${current.reviewVersion} 次复核`
               : ""}
           </p>
           <p className="inline-note">
-            分数和原文引用来自服务器；当前响应没有模型来源字段，因此不将它单独认定为真实模型评分。
+            这份评分来自教学服务。请核对报告原件与引用依据，再确认发布。
           </p>
           {current.submission?.blobId && (
             <a
@@ -568,11 +452,11 @@ export function OnlineGrading({ id }: { id: string }) {
                 </label>
                 <div className="evidence-excerpt">
                   <strong>
-                    {grade.page ? `报告第 ${grade.page} 页` : "服务未提供页码"}
+                    {grade.page ? `报告第 ${grade.page} 页` : "未标注页码"}
                   </strong>
                   <blockquote>
                     {grade.evidence ||
-                      "服务未提供原文引用，请查看报告原件核对。"}
+                      "缺少原文引用，请查看报告原件核对。"}
                   </blockquote>
                 </div>
               </article>
@@ -621,7 +505,7 @@ export function OnlineGrading({ id }: { id: string }) {
               {confirmPublish && (
                 <div className="parse-notice">
                   <p>
-                    将核定分数和综合反馈写入服务器。当前学生成绩查询入口尚未开放。
+                    将核定分数和综合反馈写入服务器。发布后学生将能查看本次成绩和反馈。
                   </p>
                   <button
                     className="button secondary"
@@ -650,35 +534,22 @@ export function OnlineGrading({ id }: { id: string }) {
 }
 
 export function OnlineInsights() {
-  const { user, courseId, setCourseId, go } = useStore();
+  const { user, courseId, go } = useStore();
   const myCourses = visibleCourses(user!);
-  const chosen = courseId === "all" ? myCourses[0]?.id : courseId;
+  const chosen = courseId === "all" ? "" : courseId;
   const query = useQuery<CourseAnalytics>(
     chosen && user!.role === "teacher"
       ? `/analytics/course/${encodeURIComponent(chosen)}?skipLLM=1`
       : "",
   );
   if (user!.role !== "teacher") return <Empty title="教学反馈仅对教师开放" />;
+  if (!chosen) return <CourseOverview />;
   return (
     <div className="page">
       <PageHeading
-        title="教学反馈"
-        eyebrow="TEACHING INSIGHTS"
-        description="依据服务器中的已发布报告，安排下一次课堂。"
+        title="学情分析"
+        description={myCourses.find((c) => c.id === chosen)?.title || "查看已发布成绩与评分项表现。"}
       />
-      <label>
-        课程
-        <select
-          value={chosen || ""}
-          onChange={(event) => setCourseId(event.target.value)}
-        >
-          {myCourses.map((course) => (
-            <option key={course.id} value={course.id}>
-              {course.title}
-            </option>
-          ))}
-        </select>
-      </label>
       <QueryNotice {...query} />
       {query.data && (
         <>
@@ -705,11 +576,11 @@ export function OnlineInsights() {
             </div>
           </div>
           <p className="inline-note">
-            数据来自服务器；均分、分数段和薄弱项只统计已发布报告。教学建议为规则汇总，引用页码与图表需教师核对。
+            数据来自服务器；均分、分数段和薄弱项只统计已发布反馈。教学建议为规则汇总，引用页码与图表需教师核对。
           </p>
           {!query.data.totalPublishedSubmissionsCount && (
             <Empty
-              title="暂无已发布报告"
+              title="暂无已发布反馈"
               description="教师完成复核并发布后，这里才会展示成绩分布和教学建议。"
             />
           )}

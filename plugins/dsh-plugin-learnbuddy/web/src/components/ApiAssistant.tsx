@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Sparkles, X } from "lucide-react";
+import { ArrowUp, X } from "lucide-react";
 import { ask, isDegradedAnswer, type AskResult } from "../api";
 import { useStore } from "../store-context";
 import type { ChatReference, Material } from "../types";
 import { VoiceInput } from "./VoiceInput";
-import { DshAssistant } from "./DshAssistant";
 
 export function ApiAssistant({
   material,
@@ -25,14 +24,12 @@ export function ApiAssistant({
   >([]);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
-  const [dsh, setDsh] = useState(false);
   const controller = useRef<AbortController | null>(null);
   const onConsumedRef = useRef(onConsumed);
   onConsumedRef.current = onConsumed;
   useEffect(() => {
     if (incoming) {
       setReference(incoming);
-      setDsh(false);
       onConsumedRef.current?.();
     }
   }, [incoming]);
@@ -67,32 +64,16 @@ export function ApiAssistant({
       }
     }
   }
-  if (dsh)
-    return (
-      <div className="api-assistant-switch">
-        <button className="text-button" onClick={() => setDsh(false)}>
-          返回课件答疑
-        </button>
-        <DshAssistant material={material} />
-      </div>
-    );
   return (
     <div className="chat-panel api-assistant">
-      <div className="assistant-heading">
-        <Sparkles size={19} />
-        <div>
-          <strong>课件答疑</strong>
-          <span>优先检索教师答疑卡，再结合课件回答</span>
-        </div>
-      </div>
       <div className="chat-scroll" aria-live="polite">
         {!messages.length && (
           <div className="chat-welcome">
-            <h3>{unavailable ? "等待课件完成解析" : "从这份材料开始问"}</h3>
+            <h3>{unavailable ? "等待课件完成解析" : user!.role === "teacher" ? "围绕这份材料备课" : "有什么想进一步理解？"}</h3>
             <p>
               {unavailable
                 ? "这份资料尚无可用正文，请重新上传或先查看原件。解析完成后可使用课件答疑。"
-                : "每次提问都会带入当前课件。回答来源会单独标注。"}
+                : user!.role === "teacher" ? "梳理讲解思路，查找学生可能遇到的疑问。" : "选中原文提问，或从一个具体问题开始。"}
             </p>
             <div className="suggested-questions">
               {material.cards
@@ -116,7 +97,7 @@ export function ApiAssistant({
                 }
               >
                 {isDegradedAnswer(message.result)
-                  ? "当前为降级模式 · 此回答不是模型产出"
+                  ? "降级回答 · 未调用模型"
                   : message.result.source === "teacher_card"
                     ? state.materials.some(
                         (m) =>
@@ -126,9 +107,9 @@ export function ApiAssistant({
                               c.id === message.result?.cardId && c.confirmed,
                           ),
                       )
-                      ? "教师权威解答 · 已确认答疑卡"
-                      : "服务端答疑卡 · 确认状态未核对"
-                    : "模型回答 · 已带入课件上下文"}
+                      ? "老师已确认"
+                      : "答疑卡 · 待核对"
+                    : "AI 回答"}
               </span>
             )}
             <p>{message.text}</p>
@@ -187,15 +168,9 @@ export function ApiAssistant({
           </div>
         </form>
         <p className="chat-footnote">
-          听写后可编辑，再手动发送。对话仅保留在本次页面中。
+          回答供学习参考，请结合原文判断。
         </p>
-        <button
-          className="text-button"
-          disabled={unavailable}
-          onClick={() => setDsh(true)}
-        >
-          打开 DSH 深入讨论
-        </button>
+
       </div>
     </div>
   );

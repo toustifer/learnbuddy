@@ -1,0 +1,84 @@
+import { randomUUID } from "node:crypto";
+
+function fail(status, message) {
+  throw Object.assign(new Error(message), { status });
+}
+
+export function buildWorkspace(store, userId) {
+  const user = userId && store.getUser(userId);
+  if (!user) fail(401, "请先登录。");
+  const courses = store.getUserCourses(user.id);
+  const assignments = store.getAssignments(user.id);
+  const submissions = assignments.flatMap((a) => store.getSubmissions(user.id, a.id))
+    .map((s) => {
+      if (user.role === "teacher") return s;
+      // Never expose unpublished grades through a history or error field.
+      return { ...s, history: [], failure: undefined,
+        grades: s.status === "published" ? s.grades : [],
+        summary: s.status === "published" ? s.summary : "" };
+    });
+  const roster = user.role === "teacher"
+    ? courses.flatMap((c) => store.listUsers()
+      .filter((u) => u.role === "student" && store.isEnrolled(c.id, u.id))
+      .map((u) => ({ courseId: c.id, student: u })))
+    : [];
+  return { courses, assignments, submissions, roster };
+}
+
+export function saveAssignment(store, userId, input, id) {
+  const user = userId && store.getUser(userId);
+  if (!user) fail(401, "请先登录。");
+  const current = id ? store.getAssignment(id, userId) : null;
+  if (id && !current) fail(404, "作业不存在或无权访问。");
+  const courseId = current?.courseId || input.courseId;
+  if (user.role !== "teacher" || !store.hasCourse(userId, courseId))
+    fail(403, "仅任课教师可以管理作业。");
+  const title = String(input.title || "").trim();
+  const description = String(input.description || "").trim();
+  if (!title || title.length > 120 || description.length > 12000)
+    fail(400, "请填写作业名称，并检查文字长度。");
+  const due = String(input.due || "");
+  if (due && (!/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?$/.test(due) || Number.isNaN(Date.parse(due))))
+    fail(400, "截止时间格式不正确。");
+  const rubric = input.rubric;
+  if (!Array.isArray(rubric) || rubric.length > 30)
+    fail(400, "评分标准格式不正确。");
+  if (rubric.some((r) => !r.id || !String(r.title || "").trim() ||
+    !String(r.criterion || "").trim() || typeof r.max !== "number" || !Number.isFinite(r.max) || r.max <= 0 || r.max > 1000) ||
+    new Set(rubric.map((r) => r.id)).size !== rubric.length)
+    fail(400, "每项评分标准需要唯一编号、名称、要求及有效分值。");
+  const published = input.published === true;
+  if (published && (!description || !rubric.length || input.confirmed !== true))
+    fail(400, "发布前请填写任务要求并确认评分标准。");
+  if (current && store.listSubmissions(id).length &&
+    (JSON.stringify(rubric) !== JSON.stringify(current.rubric) || !published))
+    fail(409, "已有学生提交，请保留原评分标准和发布状态。");
+  const materialIds = Array.isArray(input.materialIds) ? input.materialIds : [];
+  if (materialIds.some((m) => {
+    const material = store.getMaterialById(m, userId);
+    return !material || material.courseId !== courseId || material.visibility !== "course";
+  })) fail(400, "作业只能关联本课程已共享的资料。");
+  const assignment = { id: id || randomUUID(), courseId, title, description, due,
+    rubric: rubric.map(({ id: rubricId, title, criterion, max }) => ({ id: rubricId, title: String(title).trim(), criterion: String(criterion).trim(), max })),
+    materialIds, confirmed: input.confirmed === true, published };
+  return current ? store.updateAssignment(id, assignment) : store.createAssignment(assignment);
+}
+
+export function registerTeachingRoutes(server, { store, readJson, sendJson }) {
+  server.use(async (req, res, next) => {
+    const url = new URL(req.url, "http://localhost");
+    const path = url.pathname;
+    const edit = path.match(/^\/api\/learnbuddy\/assignments\/([^/]+)$/);
+    const workspace = req.method === "GET" && path === "/api/learnbuddy/workspace";
+    const create = req.method === "POST" && path === "/api/learnbuddy/assignments";
+    if (!workspace && !create && !(edit && req.method === "PUT")) return next();
+    try {
+      if (workspace) return sendJson(res, 200, { ok: true, ...buildWorkspace(store, url.searchParams.get("userId")) });
+      const body = await readJson(req);
+      const assignment = saveAssignment(store, body.userId, body, edit ? decodeURIComponent(edit[1]) : null);
+      return sendJson(res, create ? 201 : 200, { ok: true, assignment });
+    } catch (error) {
+      return sendJson(res, error.status || 400, { ok: false, error: error.message });
+    }
+  });
+}

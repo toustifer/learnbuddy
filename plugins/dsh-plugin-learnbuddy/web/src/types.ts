@@ -5,6 +5,7 @@ export interface User {
   name: string;
   role: Role;
   initials: string;
+  courses?: Course[];
 }
 export interface Course {
   id: string;
@@ -120,6 +121,12 @@ export interface DemoState {
   submissions: Submission[];
   chats: Record<string, Message[]>;
   generatedFeedback: Record<string, boolean>;
+}
+export interface AcademicWorkspace {
+  courses: Course[];
+  assignments: Assignment[];
+  submissions: Submission[];
+  roster: { courseId: string; student: User }[];
 }
 export type Route =
   | { page: "library" }

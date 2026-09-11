@@ -11,6 +11,11 @@ if (Number(process.versions.node.split(".")[0]) < 22) {
   );
 }
 const webRoot = fileURLToPath(new URL("../", import.meta.url));
+if (existsSync(path.join(webRoot, ".env.local"))) process.loadEnvFile(path.join(webRoot, ".env.local"));
+const { resolveLLMConfig } = await import("../../src/services/llm.js");
+const llm = resolveLLMConfig();
+// Both services read the same server-only key; never serialize it into a patch.
+if (llm.apiKey) process.env.LEARNBUDDY_DSH_API_KEY = llm.apiKey;
 const preview = path.join(webRoot, ".dsh-preview");
 const home = path.join(preview, "home");
 const cwd = path.join(preview, "workspace");
@@ -43,6 +48,8 @@ await writeFile(
   patch,
   JSON.stringify(
     [
+      { id: "llm-deepseek", config: { apiKeyEnv: "LEARNBUDDY_DSH_API_KEY", baseURL: llm.baseUrl, maxTokens: 8192 } },
+      { id: "agent-default-model", config: { provider: "deepseek-official", model: llm.textModel } },
       {
         insert: [
           { id: "learnbuddy-ui", name: path.join(webRoot, "dsh-ui/host.js") },
@@ -55,7 +62,7 @@ await writeFile(
 );
 await writeFile(
   path.join(cwd, "README.md"),
-  "# LearnBuddy 本地 DSH 界面预览\n\n这里只用于验证界面、资料引用和原生会话，未配置模型。\n",
+  "# LearnBuddy 本地 DSH 教学工作区\n\n用于课程资料引用与对话。模型配置来自 web/.env.local；没有 API Key 时不会产生真实模型回答。\n",
 );
 const child = spawn(
   process.execPath,

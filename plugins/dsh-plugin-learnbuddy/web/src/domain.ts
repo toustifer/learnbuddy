@@ -15,6 +15,7 @@ export function authenticate(username: string, password: string) {
     : undefined;
 }
 export function hasCourse(user: User, courseId: string) {
+  if (user.courses) return user.courses.some((c) => c.id === courseId);
   return user.role === "teacher"
     ? courses.some((c) => c.id === courseId && c.teacherId === user.id)
     : enrollments.some(
@@ -22,6 +23,7 @@ export function hasCourse(user: User, courseId: string) {
       );
 }
 export function visibleCourses(user: User) {
+  if (user.courses) return user.courses;
   return courses.filter((c) => hasCourse(user, c.id));
 }
 export function canSeeMaterial(user: User, material: Material) {

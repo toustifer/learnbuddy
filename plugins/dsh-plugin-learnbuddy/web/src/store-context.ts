@@ -1,8 +1,12 @@
 import { createContext, useContext } from "react";
-import type { DemoState, Route, User, ServerReview } from "./types";
+import type { DemoState, Route, User, ServerReview, AcademicWorkspace } from "./types";
 
 interface Store {
   state: DemoState;
+  academic: AcademicWorkspace | null;
+  academicLoading: boolean;
+  academicError: string;
+  refreshAcademic: () => Promise<void>;
   reviewResults: Record<string, ServerReview>;
   updateReviewResults: (
     fn: (current: Record<string, ServerReview>) => Record<string, ServerReview>,

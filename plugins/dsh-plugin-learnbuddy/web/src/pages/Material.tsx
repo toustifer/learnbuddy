@@ -63,7 +63,7 @@ function TeacherPreparation({
   if (LIVE_MODE)
     return (
       <div className="preparation-content">
-        <h2>{tab === "teaching" ? "我的备课草稿" : "服务器答疑卡"}</h2>
+        <h2>{tab === "teaching" ? "我的备课草稿" : "课程答疑卡"}</h2>
         <p className="inline-note">
           {tab === "teaching"
             ? "以下内容暂存于本次登录，不会发布给学生。可把准备好的问题带入右侧助手。"
@@ -367,7 +367,7 @@ export function MaterialWorkspace({ id }: { id: string }) {
   >("original");
   const [page, setPage] = useState(1);
   const [fontSize, setFontSize] = useState(15);
-  const [side, setSide] = useState<"chat" | "knowledge">("chat");
+  const [side, setSide] = useState<"chat" | "dsh">("chat");
   const [open, setOpen] = useState(true);
   const [incoming, setIncoming] = useState<ChatReference | null>(null);
   const [selection, setSelection] = useState("");
@@ -440,7 +440,6 @@ export function MaterialWorkspace({ id }: { id: string }) {
     kind: ChatReference["kind"] = "selection",
   ) {
     setOpen(true);
-    setSide("chat");
     setIncoming({
       id: crypto.randomUUID(),
       title,
@@ -515,7 +514,7 @@ export function MaterialWorkspace({ id }: { id: string }) {
           <span>
             <CourseBadge id={material.courseId} />
             <span className="desktop-only">
-              {material.sampleKey ? "服务器教学样例" : "原始文件"} ·{" "}
+              {material.sampleKey ? "教学样例" : "原始文件"} ·{" "}
               {material.size}
             </span>
           </span>
@@ -537,7 +536,7 @@ export function MaterialWorkspace({ id }: { id: string }) {
           <button
             className="icon-button"
             onClick={() => setOpen(!open)}
-            aria-label={open ? "收起学习助手" : "打开学习助手"}
+            aria-label={`${open ? "收起" : "打开"}${user!.role === "teacher" ? "备课" : "学习"}助手`}
           >
             {open ? (
               <PanelRightClose size={18} />
@@ -570,7 +569,7 @@ export function MaterialWorkspace({ id }: { id: string }) {
                     className={tab === "teaching" ? "active" : ""}
                     onClick={() => setTab("teaching")}
                   >
-                    教学准备
+                    备课笔记
                   </button>
                   <button
                     className={tab === "cards" ? "active" : ""}
@@ -693,8 +692,8 @@ export function MaterialWorkspace({ id }: { id: string }) {
                     <span>
                       {LIVE_MODE
                         ? material.sampleKey
-                          ? "服务器教学样例"
-                          : "服务器提取正文"
+                          ? "教学样例"
+                          : "提取正文"
                         : "示例课件"}
                     </span>
                   </div>
@@ -758,10 +757,10 @@ export function MaterialWorkspace({ id }: { id: string }) {
                   <aside className="reading-tip">
                     <span>
                       <BookOpen size={15} />
-                      阅读提示
+                      {user!.role === "teacher" ? "备课提示" : "阅读提示"}
                     </span>
                     <p>
-                      试着用自己的话解释这一页。遇到不确定的概念，可以引用原文与学习助手讨论。
+                      {user!.role === "teacher" ? "检查这一页的讲解顺序与易错点，可以引用原文与备课助手讨论。" : "试着用自己的话解释这一页。遇到不确定的概念，可以引用原文与学习助手讨论。"}
                     </p>
                   </aside>
                   {selection && (
@@ -901,14 +900,14 @@ export function MaterialWorkspace({ id }: { id: string }) {
                 onClick={() => setSide("chat")}
               >
                 <Sparkles size={14} />
-                学习助手
+                {user!.role === "teacher" ? "备课答疑" : "课件答疑"}
               </button>
               <button
-                className={side === "knowledge" ? "active" : ""}
-                onClick={() => setSide("knowledge")}
+                className={side === "dsh" ? "active" : ""}
+                onClick={() => setSide("dsh")}
               >
                 <BookOpen size={14} />
-                知识速览
+                DSH 对话
               </button>
             </div>
             {side === "chat" ? (
@@ -927,22 +926,11 @@ export function MaterialWorkspace({ id }: { id: string }) {
                 onJump={jump}
               />
             ) : (
-              <div className="quick-knowledge">
-                <p className="muted">
-                  {material.knowledge.length} 个关键概念 · 点击定位原文
-                </p>
-                {material.knowledge.map((k, i) => (
-                  <button key={k.id} onClick={() => jump(k.page)}>
-                    <span>0{i + 1}</span>
-                    <strong>{k.title}</strong>
-                    <p>{k.summary}</p>
-                    <small>
-                      第 {k.page} 页<ChevronRight size={12} />
-                    </small>
-                  </button>
-                ))}
-                {!material.knowledge.length && <Empty title="等待图文解析" />}
-              </div>
+              <ChatPanel
+                material={LIVE_MODE ? { ...material, source: "server", contextSections: context?.sections } : material}
+                incoming={incoming}
+                onConsumed={() => setIncoming(null)}
+              />
             )}
           </aside>
         )}

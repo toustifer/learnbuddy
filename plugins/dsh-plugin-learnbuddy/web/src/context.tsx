@@ -7,10 +7,10 @@ import {
 } from "react";
 import { Context } from "./store-context";
 import { users, freshState, fixtureGrades } from "./seed";
-import { LIVE_MODE, listMaterials, loginAccount } from "./api";
-import { authenticate, assertTeacher } from "./domain";
+import { LIVE_MODE, listMaterials, loginAccount, request } from "./api";
+import { authenticate, assertTeacher, visibleCourses } from "./domain";
 import { readState, writeState, clearBlobs } from "./storage";
-import type { DemoState, Route, User, ServerReview } from "./types";
+import type { DemoState, Route, User, ServerReview, AcademicWorkspace } from "./types";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 function parseRoute(): Route {
@@ -24,7 +24,7 @@ export function Provider({ children }: { children: ReactNode }) {
   const [initial] = useState(() =>
     LIVE_MODE
       ? {
-          state: { ...freshState(), materials: [], submissions: [], chats: {} },
+          state: { ...freshState(), assignments: [], materials: [], submissions: [], chats: {} },
           warning: "",
         }
       : readState(),
@@ -44,6 +44,35 @@ export function Provider({ children }: { children: ReactNode }) {
   });
   const userRef = useRef(user);
   userRef.current = user;
+  const [academic, setAcademic] = useState<AcademicWorkspace | null>(null);
+  const [academicLoading, setAcademicLoading] = useState(false);
+  const [academicError, setAcademicError] = useState("");
+  const academicRequest = useRef<AbortController | null>(null);
+  const refreshAcademic = useCallback(async () => {
+    if (!LIVE_MODE || !user) return;
+    academicRequest.current?.abort();
+    const controller = new AbortController();
+    academicRequest.current = controller;
+    setAcademicLoading(true);
+    setAcademicError("");
+    try {
+      const data = await request<AcademicWorkspace>(`/workspace?userId=${encodeURIComponent(user.id)}`, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      if (!Array.isArray(data.assignments) || !Array.isArray(data.submissions) || !Array.isArray(data.roster) || !Array.isArray(data.courses)) throw new Error("课程数据不完整，请重试。");
+      setAcademic(data);
+      const next = { ...stateRef.current, assignments: data.assignments, submissions: data.submissions };
+      stateRef.current = next;
+      setState(next);
+    } catch (e) {
+      if (!controller.signal.aborted) setAcademicError((e as Error).message);
+    } finally {
+      if (!controller.signal.aborted) setAcademicLoading(false);
+    }
+  }, [user]);
+  useEffect(() => {
+    void refreshAcademic();
+    return () => academicRequest.current?.abort();
+  }, [refreshAcademic]);
   const [reviewResults, setReviewResults] = useState<
     Record<string, ServerReview>
   >({});
@@ -115,6 +144,12 @@ export function Provider({ children }: { children: ReactNode }) {
     setState(next);
   }
   function go(r: Route) {
+    const targetCourse = r.page === "material"
+      ? stateRef.current.materials.find((m) => m.id === r.id)?.courseId
+      : r.page === "assignment" || r.page === "grading"
+        ? stateRef.current.assignments.find((a) => a.id === r.id)?.courseId
+        : undefined;
+    if (targetCourse && userRef.current && visibleCourses(userRef.current).some((c) => c.id === targetCourse)) setCourseId(targetCourse);
     location.hash = r.page + ("id" in r ? "/" + encodeURIComponent(r.id) : "");
     setRoute(r);
   }
@@ -129,6 +164,7 @@ export function Provider({ children }: { children: ReactNode }) {
     if (LIVE_MODE) {
       const clean = {
         ...freshState(),
+        assignments: [],
         materials: [],
         submissions: [],
         chats: {},
@@ -138,6 +174,9 @@ export function Provider({ children }: { children: ReactNode }) {
       setMaterialsError("");
     }
     userRef.current = u;
+    academicRequest.current?.abort();
+    setAcademic(null);
+    setAcademicError("");
     setReviewResults({});
     setUser(u);
     setCourseId("all");
@@ -146,14 +185,18 @@ export function Provider({ children }: { children: ReactNode }) {
     } catch {
       /* session remains usable in memory */
     }
-    go({ page: "library" });
+    go({ page: u.role === "teacher" ? "assignments" : "library" });
   }
   function logout() {
     epoch.current++;
     materialsRequest.current?.abort();
+    academicRequest.current?.abort();
+    setAcademic(null);
+    setAcademicError("");
     if (LIVE_MODE) {
       const clean = {
         ...freshState(),
+        assignments: [],
         materials: [],
         submissions: [],
         chats: {},
@@ -261,6 +304,10 @@ export function Provider({ children }: { children: ReactNode }) {
   return (
     <Context.Provider
       value={{
+        academic,
+        academicLoading,
+        academicError,
+        refreshAcademic,
         state,
         reviewResults,
         updateReviewResults,
