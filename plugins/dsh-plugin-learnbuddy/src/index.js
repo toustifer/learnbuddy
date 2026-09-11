@@ -1,5 +1,22 @@
 import { registerLearnBuddyRoutes } from "./routes/api.js";
 import { registerLearnBuddySkills } from "./skills/index.js";
+export { MaterialContextService, buildMaterialContext, searchAnswerCards, buildQAPromptContext } from "./services/material-context.js";
+export {
+  DshContextBridgeService,
+  buildDshSessionPrompt,
+  formatQuoteEvidence,
+  truncateContext,
+  validateBridgeMessage,
+  createBridgeResponse,
+  DEFAULT_MAX_CONTEXT_LENGTH
+} from "./services/dsh-context-bridge.js";
+export {
+  AutoGraderPipelineService,
+  DEFAULT_NETWORK_RUBRIC,
+  SAMPLE_STUDENT_REPORTS,
+  extractReportContent,
+  calculateGradesAndTotal
+} from "./services/autograder-pipeline.js";
 
 /**
  * LearnBuddy Cordis/DSH Plugin
