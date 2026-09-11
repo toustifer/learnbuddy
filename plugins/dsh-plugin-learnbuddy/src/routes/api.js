@@ -17,6 +17,7 @@ import { MaterialParserService } from "../services/material-parser.js";
 import { MaterialContextService } from "../services/material-context.js";
 import { DshContextBridgeService } from "../services/dsh-context-bridge.js";
 import { AutoGraderPipelineService } from "../services/autograder-pipeline.js";
+import { FeedbackAnalyticsService } from "../services/feedback-analytics.js";
 import { AutoGraderEngine } from "../services/grader.js";
 import { MultimodalLLMClient } from "../services/llm.js";
 import { DatabaseStore } from "../db/store.js";
@@ -178,6 +179,21 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     llmClient,
     graderEngine: autoGrader
   });
+  const feedbackAnalyticsService = options.feedbackAnalyticsService || new FeedbackAnalyticsService({
+    store,
+    llmClient,
+    materialContextService
+  });
+
+  /**
+   * 复核发布与分析类接口的 HTTP 状态码映射：
+   * 权限不足 -> 403；资源不存在 -> 404；其余业务校验失败 -> 400
+   */
+  const resolveErrorStatus = (message = "") => {
+    if (/权限不足|非教师角色|禁止复核/.test(message)) return 403;
+    if (/不存在/.test(message)) return 404;
+    return 400;
+  };
 
   const readRawBody = async (req) => {
     return new Promise((resolve, reject) => {
@@ -794,6 +810,85 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         return sendJson(res, 200, result);
       } catch (err) {
         return sendJson(res, 400, {
+          ok: false,
+          error: err.message
+        });
+      }
+    }
+
+    // ==========================================
+    // 8. 教师人工复核改分与正式发布成绩
+    //    POST /api/learnbuddy/grader/review-publish
+    // ==========================================
+    if (req.method === "POST" && pathname === "/api/learnbuddy/grader/review-publish") {
+      const body = await parseJsonBody(req);
+      const { submissionId, grades, summary, strictRange } = body;
+      const teacherId = body.teacherId || body.userId || body.reviewerId;
+
+      if (!submissionId) {
+        return sendJson(res, 400, { ok: false, error: "缺少必要参数: submissionId" });
+      }
+      if (!teacherId) {
+        return sendJson(res, 400, { ok: false, error: "缺少必要参数: teacherId" });
+      }
+      if (!Array.isArray(grades)) {
+        return sendJson(res, 400, { ok: false, error: "grades 必须为数组格式" });
+      }
+
+      try {
+        const result = await feedbackAnalyticsService.reviewAndPublishSubmission(submissionId, {
+          teacherId,
+          grades,
+          summary,
+          strictRange: strictRange === true
+        });
+        return sendJson(res, 200, result);
+      } catch (err) {
+        return sendJson(res, resolveErrorStatus(err.message), {
+          ok: false,
+          error: err.message
+        });
+      }
+    }
+
+    // ==========================================
+    // 8.1 作业维度学情分析与全班薄弱项
+    //     GET /api/learnbuddy/analytics/assignment/:id
+    // ==========================================
+    const assignmentAnalyticsMatch = pathname.match(/^\/api\/learnbuddy\/analytics\/assignment\/([^/]+)$/);
+    if (req.method === "GET" && assignmentAnalyticsMatch) {
+      const assignmentId = decodeURIComponent(assignmentAnalyticsMatch[1]);
+      const skipLLM = ["1", "true"].includes(url.searchParams.get("skipLLM"));
+
+      try {
+        const result = await feedbackAnalyticsService.computeAssignmentAnalytics(assignmentId, {
+          skipLLM
+        });
+        return sendJson(res, 200, result);
+      } catch (err) {
+        return sendJson(res, resolveErrorStatus(err.message), {
+          ok: false,
+          error: err.message
+        });
+      }
+    }
+
+    // ==========================================
+    // 8.2 课程大盘学情与跨作业教学建议
+    //     GET /api/learnbuddy/analytics/course/:id
+    // ==========================================
+    const courseAnalyticsMatch = pathname.match(/^\/api\/learnbuddy\/analytics\/course\/([^/]+)$/);
+    if (req.method === "GET" && courseAnalyticsMatch) {
+      const courseId = decodeURIComponent(courseAnalyticsMatch[1]);
+      const skipLLM = ["1", "true"].includes(url.searchParams.get("skipLLM"));
+
+      try {
+        const result = await feedbackAnalyticsService.computeCourseFeedbackOverview(courseId, {
+          skipLLM
+        });
+        return sendJson(res, 200, result);
+      } catch (err) {
+        return sendJson(res, resolveErrorStatus(err.message), {
           ok: false,
           error: err.message
         });
