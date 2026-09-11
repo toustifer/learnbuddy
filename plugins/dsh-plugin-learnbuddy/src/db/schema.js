@@ -3,6 +3,20 @@
  * Compatible with Node 22 (node:sqlite DatabaseSync)
  */
 
+/**
+ * task-15：materials 表的解析错误持久化列。
+ *
+ * 为什么需要「迁移」而不是只改 SCHEMA_SQL：
+ * `CREATE TABLE IF NOT EXISTS` 对**已存在**的表不会补列。服务器上的
+ * `data/learnbuddy.db` 已含真实数据，只改建表语句会让老库读新列时报
+ * `no such column`。因此这里显式列出「可增量补齐」的列，由
+ * `migrateMaterialsParseErrorColumns()` 幂等 ALTER。
+ */
+export const MATERIAL_PARSE_ERROR_COLUMNS = [
+  { name: "parse_error_code", ddl: "parse_error_code TEXT" },
+  { name: "parse_error", ddl: "parse_error TEXT" }
+];
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
@@ -46,6 +60,9 @@ CREATE TABLE IF NOT EXISTS materials (
   knowledge TEXT DEFAULT '[]',
   cards TEXT DEFAULT '[]',
   teaching TEXT,
+  -- task-15：解析失败时的原因码与可读信息（解析成功时均为 NULL）
+  parse_error_code TEXT,
+  parse_error TEXT,
   FOREIGN KEY (course_id) REFERENCES courses(id),
   FOREIGN KEY (owner_id) REFERENCES users(id)
 );
@@ -434,12 +451,58 @@ export const DEFAULT_SUBMISSIONS = [
 ];
 
 /**
+ * task-15：幂等补齐 materials 表的解析错误列。
+ *
+ * 原理（这是本任务的关键坑）：
+ * `CREATE TABLE IF NOT EXISTS materials (...)` 只在表**不存在**时建表；
+ * 服务器上已有的 learnbuddy.db 里 materials 是旧结构，改 SCHEMA_SQL 不会加列。
+ * 所以每次打开数据库都读一次 `PRAGMA table_info(materials)`，缺哪列补哪列。
+ *
+ * 幂等性：已有该列时直接跳过，重复调用不会报错、不会重复加列。
+ * 数据安全：ADD COLUMN 不动已有行，老数据保留，新列为 NULL（= 无解析错误）。
+ *
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @returns {{migrated: boolean, added: string[], existing: string[]}}
+ */
+export function migrateMaterialsParseErrorColumns(db) {
+  const table = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'materials'")
+    .get();
+  if (!table) {
+    // materials 表还不存在（正常路径下 SCHEMA_SQL 已建好），无需迁移
+    return { migrated: false, added: [], existing: [] };
+  }
+
+  const existing = db
+    .prepare("PRAGMA table_info(materials)")
+    .all()
+    .map((row) => row.name);
+
+  const added = [];
+  for (const column of MATERIAL_PARSE_ERROR_COLUMNS) {
+    if (existing.includes(column.name)) continue;
+    try {
+      db.exec(`ALTER TABLE materials ADD COLUMN ${column.ddl}`);
+    } catch (err) {
+      // 并发启动（同库被两个进程/实例先后打开）时，后到者可能撞上 "duplicate column name"。
+      // 该列此时已由另一个实例补好，等价于迁移完成，不应让服务起不来。
+      if (!/duplicate column name/i.test(err.message || "")) throw err;
+    }
+    added.push(column.name);
+  }
+
+  return { migrated: added.length > 0, added, existing };
+}
+
+/**
  * Initialize database schema
  * @param {import('node:sqlite').DatabaseSync} db 
  */
 export function initSchema(db) {
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec(SCHEMA_SQL);
+  // 老库增量迁移：CREATE TABLE IF NOT EXISTS 不会给已存在的表补列
+  migrateMaterialsParseErrorColumns(db);
 }
 
 /**

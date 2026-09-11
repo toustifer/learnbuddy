@@ -298,6 +298,10 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
 
     // ==========================================
     // 2. 获取课件列表（全面连通 DatabaseStore）
+    //    返回的每个 material 由 store 映射层带上 task-15 的
+    //    parseStatus / parseError / parseErrorCode（成功项不带错误字段）。
+    //    注意：权限过滤逻辑（学生仅见公开+自有私有资料）保持不变，
+    //    解析错误信息随 material 一起过滤，不构成越权泄露渠道。
     // ==========================================
     if (req.method === "GET" && pathname === "/api/learnbuddy/materials") {
       const userId = url.searchParams.get("userId");
@@ -409,7 +413,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         const parsed = await materialParser.parseAndExtract(savedFile.filePath, fileName);
         const parseFailed = parsed.status === "failed";
 
-        // 3. 写入 DatabaseStore 持久化存储
+        // 3. 写入 DatabaseStore 持久化存储（含解析错误，刷新/重进列表后仍可排查）
         const materialId = `mat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         const materialData = {
           id: materialId,
@@ -425,7 +429,10 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
           date: new Date().toISOString().slice(0, 10),
           blobId: savedFile.fileId,
           knowledge: parsed.knowledgePoints || [],
-          cards: []
+          cards: [],
+          // task-15：错误必须落库（成功时写 null，不残留任何陈旧错误）
+          parseErrorCode: parsed.errorCode || null,
+          parseError: parsed.error || null
         };
 
         const createdMaterial = store.createMaterial(materialData);

@@ -41,6 +41,8 @@ function mapCourse(row) {
 
 function mapMaterial(row) {
   if (!row) return null;
+  const parseErrorCode = row.parse_error_code || undefined;
+  const parseError = row.parse_error || undefined;
   return {
     id: row.id,
     courseId: row.course_id,
@@ -56,8 +58,37 @@ function mapMaterial(row) {
     blobId: row.blob_id || undefined,
     knowledge: row.knowledge ? JSON.parse(row.knowledge) : [],
     cards: row.cards ? JSON.parse(row.cards) : [],
-    teaching: row.teaching || undefined
+    teaching: row.teaching || undefined,
+    // task-15：解析结果状态。成功/未解析的课件不带 parseError / parseErrorCode（字段不出现），
+    // 只有失败记录才带原因码与可读信息，避免列表里出现一堆 null 噪声。
+    parseStatus: deriveParseStatus(row),
+    parseErrorCode,
+    parseError
   };
+}
+
+/**
+ * task-15：派生 parseStatus。
+ * - 有原因码/原因信息 → failed（如实透出失败，即使 status 列异常也优先报错）
+ * - 否则 status === 'ready' → parsed
+ * - 其余（pending 且无错误）→ pending（历史遗留的待解析记录，不得谎报 parsed）
+ */
+function deriveParseStatus(row) {
+  if (row.parse_error_code || row.parse_error) return "failed";
+  return row.status === "ready" ? "parsed" : "pending";
+}
+
+/**
+ * task-15：解析错误的写入口径（create / update 共用）。
+ * 不变量：`status === 'ready'` 等价于「解析成功」，此时必须清空解析错误，
+ * 否则重新解析成功后仍会显示已经不成立的失败原因（陈旧错误）。
+ */
+function normalizeParseState(status, parseErrorCode, parseError) {
+  const code = parseErrorCode || null;
+  const message = parseError || null;
+  if (!code && !message) return { parseErrorCode: null, parseError: null };
+  if (status === "ready") return { parseErrorCode: null, parseError: null };
+  return { parseErrorCode: code, parseError: message };
 }
 
 function mapAssignment(row) {
@@ -252,9 +283,12 @@ export class DatabaseStore {
     const stmt = this.db.prepare(`
       INSERT INTO materials (
         id, course_id, owner_id, title, kind, visibility, status,
-        size, pages, date, sample_key, blob_id, knowledge, cards, teaching
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        size, pages, date, sample_key, blob_id, knowledge, cards, teaching,
+        parse_error_code, parse_error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+    const status = material.status || "ready";
+    const parseState = normalizeParseState(status, material.parseErrorCode, material.parseError);
     stmt.run(
       material.id,
       material.courseId,
@@ -262,7 +296,7 @@ export class DatabaseStore {
       material.title,
       material.kind || "PDF",
       material.visibility || "course",
-      material.status || "ready",
+      status,
       material.size || "0 KB",
       material.pages || 1,
       material.date || new Date().toISOString().slice(0, 10),
@@ -270,7 +304,9 @@ export class DatabaseStore {
       material.blobId || null,
       JSON.stringify(material.knowledge || []),
       JSON.stringify(material.cards || []),
-      material.teaching || null
+      material.teaching || null,
+      parseState.parseErrorCode,
+      parseState.parseError
     );
     return this.getMaterialById(material.id);
   }
@@ -338,6 +374,8 @@ export class DatabaseStore {
     if (!existing) return null;
 
     const merged = { ...existing, ...patch };
+    // task-15：重新解析成功（status=ready）必须清掉陈旧错误；显式传 null 也走同一口径
+    const parseState = normalizeParseState(merged.status, merged.parseErrorCode, merged.parseError);
     const stmt = this.db.prepare(`
       UPDATE materials SET
         course_id = ?,
@@ -353,7 +391,9 @@ export class DatabaseStore {
         blob_id = ?,
         knowledge = ?,
         cards = ?,
-        teaching = ?
+        teaching = ?,
+        parse_error_code = ?,
+        parse_error = ?
       WHERE id = ?
     `);
     stmt.run(
@@ -371,6 +411,8 @@ export class DatabaseStore {
       JSON.stringify(merged.knowledge || []),
       JSON.stringify(merged.cards || []),
       merged.teaching || null,
+      parseState.parseErrorCode,
+      parseState.parseError,
       id
     );
     return this.getMaterialById(id);
