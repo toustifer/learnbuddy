@@ -16,9 +16,17 @@ import {
 } from "lucide-react";
 import { Provider } from "./context";
 import { useStore } from "./store-context";
-import { authenticate, visibleCourses, visibleMaterials } from "./domain";
+import { visibleCourses, visibleMaterials } from "./domain";
+import { LIVE_MODE } from "./api";
 import { courses, users } from "./seed";
 import { Brand, CourseBadge, FileIcon, MiniArt, Modal } from "./ui";
+import {
+  OnlineAssignments,
+  OnlineAssignment,
+  OnlineGrading,
+  OnlineInsights,
+} from "./pages/Online";
+import { Empty } from "./ui";
 import { Library } from "./pages/Library";
 import { MaterialWorkspace } from "./pages/Material";
 import {
@@ -34,10 +42,18 @@ function Login() {
   const [username, setUsername] = useState("student.lin");
   const [password, setPassword] = useState("123");
   const [error, setError] = useState("");
-  function enter(name = username) {
-    const u = authenticate(name, password);
-    if (!u) return setError("账号或密码不正确。演示账号密码均为 123。");
-    login(u);
+  const [pending, setPending] = useState(false);
+  async function enter(name = username, pass = password) {
+    if (pending) return;
+    setPending(true);
+    setError("");
+    try {
+      await login(name, pass);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setPending(false);
+    }
   }
   return (
     <div className="login-page">
@@ -82,7 +98,7 @@ function Login() {
       <section className="login-form-section">
         <div className="login-form">
           <span className="status green">
-            <span /> 交互演示
+            <span /> {LIVE_MODE ? "连接教学服务" : "本地交互演示"}
           </span>
           <h2>欢迎回到 LearnBuddy</h2>
           <p>从一份课件，或一个问题开始。</p>
@@ -119,8 +135,12 @@ function Login() {
                 {error}
               </p>
             )}
-            <button className="button primary full" type="submit">
-              进入工作台
+            <button
+              className="button primary full"
+              type="submit"
+              disabled={pending}
+            >
+              {pending ? "正在登录…" : "进入工作台"}
               <ArrowRight size={17} />
             </button>
           </form>
@@ -131,10 +151,8 @@ function Login() {
             {users.slice(0, 4).map((u) => (
               <button
                 key={u.id}
-                onClick={() => {
-                  const account = authenticate(u.username, "123");
-                  if (account) login(account);
-                }}
+                disabled={pending}
+                onClick={() => void enter(u.username, "123")}
               >
                 <span
                   className={
@@ -156,7 +174,9 @@ function Login() {
           <p className="login-disclaimer">
             全部账号密码为 123，user / 123 也可进入。
             <br />
-            课程与人物均为虚构示例；AI 输出为模拟。数据只保存在当前浏览器。
+            {LIVE_MODE
+              ? "使用演示账号连接服务器；课件来源与回答降级状态会在页面标注。"
+              : "课程与人物均为虚构示例；数据只保存在当前浏览器。"}
           </p>
         </div>
       </section>
@@ -175,6 +195,7 @@ function Shell() {
     state,
     reset,
     busy,
+    notify,
   } = useStore();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(
@@ -228,7 +249,13 @@ function Shell() {
       : navPage === "insights"
         ? "教学反馈"
         : "作业与报告";
-  const course = courses.find((c) => c.id === courseId);
+  const routeCourseId =
+    route.page === "material"
+      ? state.materials.find((m) => m.id === route.id)?.courseId
+      : ["assignment", "grading"].includes(route.page) && "id" in route
+        ? state.assignments.find((a) => a.id === route.id)?.courseId
+        : courseId;
+  const course = courses.find((c) => c.id === routeCourseId);
   return (
     <div className="app-shell">
       {mobileOpen && (
@@ -255,7 +282,8 @@ function Shell() {
         </div>
         <div className="workspace-label">
           <GraduationCap size={14} />
-          我的{user.role === "teacher" ? "教学" : "学习"}空间<span>DEMO</span>
+          我的{user.role === "teacher" ? "教学" : "学习"}空间
+          <span>{LIVE_MODE ? "在线" : "DEMO"}</span>
         </div>
         <button
           className="sidebar-search"
@@ -294,14 +322,15 @@ function Shell() {
           )}
         </nav>
         <div className="sidebar-section-title">
-          我的课程<span>{myCourses.length}</span>
+          按课程筛选<span>{myCourses.length}</span>
         </div>
+        <p className="sidebar-scope-note">筛选当前的{title}</p>
         <nav className="course-nav" aria-label="课程筛选">
           <button
             className={courseId === "all" ? "selected" : ""}
             onClick={() => {
               setCourseId("all");
-              go({ page: "library" });
+              go({ page: navPage });
             }}
           >
             <span className="all-course-icon">▦</span>全部课程
@@ -312,7 +341,7 @@ function Shell() {
               className={courseId === c.id ? "selected" : ""}
               onClick={() => {
                 setCourseId(c.id);
-                go({ page: "library" });
+                go({ page: navPage });
               }}
             >
               <span className={"course-square " + c.color}>
@@ -356,19 +385,42 @@ function Shell() {
             >
               <Menu size={19} />
             </button>
-            <span>{user.role === "teacher" ? "教学空间" : "学习空间"}</span>
+            <button
+              onClick={() => {
+                setCourseId("all");
+                go({ page: "library" });
+              }}
+            >
+              {user.role === "teacher" ? "教学空间" : "学习空间"}
+            </button>
             <ChevronRight size={12} />
-            <button onClick={() => go({ page: navPage })}>{title}</button>
+            <button
+              onClick={() => {
+                setCourseId("all");
+                go({ page: navPage });
+              }}
+            >
+              {title}
+            </button>
             {course && (
               <>
                 <ChevronRight size={12} />
-                <span className="breadcrumb-course">{course.title}</span>
+                <button
+                  className="breadcrumb-course"
+                  onClick={() => {
+                    setCourseId(course.id);
+                    go({ page: navPage });
+                  }}
+                >
+                  {course.title}
+                </button>
               </>
             )}
           </div>
           <button className="demo-pill" onClick={() => setModal("about")}>
             <span />
-            交互演示<span className="desktop-only"> · 模型待接入</span>
+            {LIVE_MODE ? "服务器接入" : "本地演示"}
+            <span className="desktop-only"> · 查看数据说明</span>
           </button>
         </header>
         <main
@@ -383,11 +435,31 @@ function Shell() {
         >
           {route.page === "library" && <Library />}
           {route.page === "material" && <MaterialWorkspace id={route.id} />}
-          {route.page === "assignments" && <Assignments />}
-          {route.page === "assignment" && <AssignmentEditor id={route.id} />}
-          {route.page === "grading" && <Grading id={route.id} />}
-          {route.page === "report" && <ReportWorkspace id={route.id} />}
-          {route.page === "insights" && <Insights />}
+          {route.page === "assignments" &&
+            (LIVE_MODE ? <OnlineAssignments /> : <Assignments />)}
+          {route.page === "assignment" &&
+            (LIVE_MODE ? (
+              <OnlineAssignment id={route.id} />
+            ) : (
+              <AssignmentEditor id={route.id} />
+            ))}
+          {route.page === "grading" &&
+            (LIVE_MODE ? (
+              <OnlineGrading id={route.id} />
+            ) : (
+              <Grading id={route.id} />
+            ))}
+          {route.page === "report" &&
+            (LIVE_MODE ? (
+              <Empty
+                title="报告详情查询尚未开放"
+                description="请从评阅管理查看本次操作返回的结果。"
+              />
+            ) : (
+              <ReportWorkspace id={route.id} />
+            ))}
+          {route.page === "insights" &&
+            (LIVE_MODE ? <OnlineInsights /> : <Insights />)}
         </main>
       </div>
       {modal === "account" && (
@@ -402,8 +474,9 @@ function Shell() {
                 key={u.id}
                 className={user.id === u.id ? "current" : ""}
                 onClick={() => {
-                  login(u);
-                  setModal(null);
+                  void login(u.username, "123")
+                    .then(() => setModal(null))
+                    .catch((e) => notify(e.message, true));
                 }}
               >
                 <span
@@ -485,7 +558,7 @@ function Shell() {
       )}
       {modal === "about" && (
         <Modal
-          title="这是一份可操作的初始 Demo"
+          title={LIVE_MODE ? "当前接入范围" : "本地交互演示"}
           description="用完整流程验证页面、交互与师生关系。"
           onClose={() => setModal(null)}
         >
@@ -494,11 +567,12 @@ function Shell() {
               你可以切换账号、浏览课程资料、引用图文提问、准备答疑卡和作业标准，再体验提交、批量评阅、教师复核和反馈。
             </p>
             <p>
-              课程、人物、课件和报告均为虚构教学示例。学习对话已嵌入本地
-              DSH，模型尚未配置；课件整理与评阅仍采用演示逻辑。真实上传文件保存在浏览器，解析仍待接入。
+              {LIVE_MODE
+                ? "课件、原文和伴学问答从服务器获取；课程目录为对接指南的固定条目。课程、作业和提交列表接口尚未提供；回答会明确标注教师答疑卡、模型回答或降级。"
+                : "课程、人物、课件和报告为虚构教学示例。文件和模拟结果保存在当前浏览器。"}
             </p>
             <p>
-              账号与权限仅用于前端交互演示，不能替代服务端权限校验。教师教学反馈只基于本课程提交的报告，不读取学生个人聊天。
+              界面按账号角色显示功能；当前后端的密码与令牌校验尚不完整，不能作为正式权限隔离。教师教学反馈只基于本课程报告，不读取学生个人聊天。
             </p>
           </div>
           <div className="modal-footer">
@@ -509,7 +583,7 @@ function Shell() {
                 void reset().then(() => setModal(null));
               }}
             >
-              重置演示数据
+              {LIVE_MODE ? "刷新服务器资料" : "重置演示数据"}
             </button>
             <button className="button primary" onClick={() => setModal(null)}>
               继续体验

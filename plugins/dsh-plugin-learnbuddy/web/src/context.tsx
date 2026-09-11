@@ -1,9 +1,16 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Context } from "./store-context";
 import { users, freshState, fixtureGrades } from "./seed";
-import { assertTeacher } from "./domain";
+import { LIVE_MODE, listMaterials, loginAccount } from "./api";
+import { authenticate, assertTeacher } from "./domain";
 import { readState, writeState, clearBlobs } from "./storage";
-import type { DemoState, Route, User } from "./types";
+import type { DemoState, Route, User, ServerReview } from "./types";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 function parseRoute(): Route {
@@ -14,11 +21,19 @@ function parseRoute(): Route {
   return { page: "library" };
 }
 export function Provider({ children }: { children: ReactNode }) {
-  const [initial] = useState(readState);
+  const [initial] = useState(() =>
+    LIVE_MODE
+      ? {
+          state: { ...freshState(), materials: [], submissions: [], chats: {} },
+          warning: "",
+        }
+      : readState(),
+  );
   const [state, setState] = useState(initial.state);
   const stateRef = useRef(state);
   const [user, setUser] = useState<User | null>(() => {
     try {
+      if (LIVE_MODE) return null;
       return (
         users.find((u) => u.id === sessionStorage.getItem("learnbuddy-user")) ||
         null
@@ -27,6 +42,46 @@ export function Provider({ children }: { children: ReactNode }) {
       return null;
     }
   });
+  const userRef = useRef(user);
+  userRef.current = user;
+  const [reviewResults, setReviewResults] = useState<
+    Record<string, ServerReview>
+  >({});
+  function updateReviewResults(
+    fn: (current: Record<string, ServerReview>) => Record<string, ServerReview>,
+  ) {
+    if (!user || user.id !== userRef.current?.id) return;
+    setReviewResults(fn);
+  }
+  const [materialsLoading, setMaterialsLoading] = useState(false);
+  const [materialsError, setMaterialsError] = useState("");
+  const materialsRequest = useRef<AbortController | null>(null);
+  const epoch = useRef(0);
+  const refreshMaterials = useCallback(async () => {
+    if (!LIVE_MODE || !user) return;
+    materialsRequest.current?.abort();
+    const controller = new AbortController();
+    materialsRequest.current = controller;
+    setMaterialsLoading(true);
+    setMaterialsError("");
+    try {
+      const materials = await listMaterials(user.id, controller.signal);
+      if (controller.signal.aborted) return;
+      const next = { ...stateRef.current, materials };
+      stateRef.current = next;
+      setState(next);
+    } catch (e) {
+      if (!controller.signal.aborted) setMaterialsError((e as Error).message);
+    } finally {
+      if (!controller.signal.aborted) setMaterialsLoading(false);
+    }
+  }, [user]);
+  useEffect(() => {
+    void refreshMaterials();
+    return () => {
+      materialsRequest.current?.abort();
+    };
+  }, [refreshMaterials]);
   const [route, setRoute] = useState<Route>(parseRoute);
   const [courseId, setCourseId] = useState("all");
   const [busy, setBusy] = useState<Record<string, boolean>>({});
@@ -51,7 +106,7 @@ export function Provider({ children }: { children: ReactNode }) {
   function update(fn: (s: DemoState) => DemoState) {
     const next = fn(stateRef.current);
     try {
-      writeState(next);
+      if (!LIVE_MODE) writeState(next);
     } catch {
       notify("未能保存更改，请检查浏览器存储空间后重试。", true);
       throw new Error("保存失败");
@@ -63,17 +118,51 @@ export function Provider({ children }: { children: ReactNode }) {
     location.hash = r.page + ("id" in r ? "/" + encodeURIComponent(r.id) : "");
     setRoute(r);
   }
-  function login(u: User) {
+  async function login(username: string, password: string) {
+    const turn = ++epoch.current;
+    const u = LIVE_MODE
+      ? await loginAccount(username, password)
+      : authenticate(username, password);
+    if (!u) throw new Error("账号或密码不正确，演示账号密码为 123。");
+    if (turn !== epoch.current) return;
+    materialsRequest.current?.abort();
+    if (LIVE_MODE) {
+      const clean = {
+        ...freshState(),
+        materials: [],
+        submissions: [],
+        chats: {},
+      };
+      stateRef.current = clean;
+      setState(clean);
+      setMaterialsError("");
+    }
+    userRef.current = u;
+    setReviewResults({});
     setUser(u);
     setCourseId("all");
     try {
-      sessionStorage.setItem("learnbuddy-user", u.id);
+      if (!LIVE_MODE) sessionStorage.setItem("learnbuddy-user", u.id);
     } catch {
       /* session remains usable in memory */
     }
     go({ page: "library" });
   }
   function logout() {
+    epoch.current++;
+    materialsRequest.current?.abort();
+    if (LIVE_MODE) {
+      const clean = {
+        ...freshState(),
+        materials: [],
+        submissions: [],
+        chats: {},
+      };
+      stateRef.current = clean;
+      setState(clean);
+    }
+    userRef.current = null;
+    setReviewResults({});
     setUser(null);
     setCourseId("all");
     try {
@@ -88,7 +177,7 @@ export function Provider({ children }: { children: ReactNode }) {
     running.current.add(key);
     setBusy(Object.fromEntries([...running.current].map((k) => [k, true])));
     try {
-      await delay(750);
+      if (!LIVE_MODE) await delay(750);
       await action();
     } catch (e) {
       notify(e instanceof Error ? e.message : "操作失败，请重试。", true);
@@ -98,6 +187,7 @@ export function Provider({ children }: { children: ReactNode }) {
     }
   }
   async function gradeReports(ids: string[]) {
+    if (LIVE_MODE) return notify("请通过服务器评阅入口操作。", true);
     if (!user || !ids.length) return;
     const viewer = user;
     const eligible = ids.filter((id) => {
@@ -157,6 +247,10 @@ export function Provider({ children }: { children: ReactNode }) {
     notify("本批评阅已结束，请查看各份报告的状态。");
   }
   async function reset() {
+    if (LIVE_MODE) {
+      await refreshMaterials();
+      return;
+    }
     if (running.current.size)
       return notify("请等待当前任务结束后再重置。", true);
     await clearBlobs();
@@ -168,6 +262,11 @@ export function Provider({ children }: { children: ReactNode }) {
     <Context.Provider
       value={{
         state,
+        reviewResults,
+        updateReviewResults,
+        materialsLoading,
+        materialsError,
+        refreshMaterials,
         user,
         route,
         courseId,

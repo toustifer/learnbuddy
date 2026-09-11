@@ -4,6 +4,29 @@ import { freshState } from "./seed";
 
 describe("DSH material handoff", () => {
   const material = freshState().materials.find((m) => m.id === "mat-tcp")!;
+  it("never substitutes local text for a server material whose context has not loaded", () => {
+    const handoff = buildDshHandoff({
+      material: { ...material, source: "server" },
+      references: [],
+      question: "问题",
+    });
+    expect(handoff.text).toContain("尚未带入正文");
+    expect(handoff.text).not.toContain("Wireshark 常默认展示相对序列号");
+  });
+  it("uses fetched text before the local fixture for a server sample with the same id", () => {
+    const handoff = buildDshHandoff({
+      material: {
+        ...material,
+        contextSections: [
+          { page: 4, chapter: "更新的材料", content: "服务器新正文" },
+        ],
+      },
+      references: [],
+      question: "解释这段",
+    });
+    expect(handoff.text).toContain("服务器新正文");
+    expect(handoff.text).not.toContain("Wireshark 常默认展示相对序列号");
+  });
   it("carries the actual example text and question without sending conversation history", () => {
     const handoff = buildDshHandoff({
       material,

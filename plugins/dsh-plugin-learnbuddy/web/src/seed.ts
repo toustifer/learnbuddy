@@ -72,8 +72,17 @@ export const courses: Course[] = [
     color: "purple",
     description: "让数据之间的关系，变得清晰。",
   },
+  {
+    id: "cs101",
+    teacherId: "t-chen",
+    title: "计算机科学导论",
+    code: "CS 101",
+    color: "green",
+    description: "认识计算机科学的基础概念。",
+  },
 ];
 export const enrollments: Enrollment[] = [
+  { courseId: "cs101", studentId: "s-yi" },
   { courseId: "network", studentId: "s-yi" },
   { courseId: "os", studentId: "s-yi" },
   { courseId: "network", studentId: "s-zhou" },

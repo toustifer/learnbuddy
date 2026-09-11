@@ -47,7 +47,7 @@ export function Brand({ small = false }: { small?: boolean }) {
   );
 }
 export function CourseBadge({ id }: { id: string }) {
-  const c = courses.find((c) => c.id === id)!;
+  const c = courses.find((c) => c.id === id) || { title: id, color: "green" };
   return (
     <span className={"course-badge " + c.color}>
       <span className="course-dot" />

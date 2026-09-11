@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
   ChevronRight,
@@ -7,10 +7,12 @@ import {
   Plus,
   Search,
   Upload,
+  X,
 } from "lucide-react";
 import { useStore } from "../store-context";
 import { validateFile, visibleCourses, visibleMaterials } from "../domain";
 import { courses, users } from "../seed";
+import { LIVE_MODE, uploadMaterial, parseErrorText } from "../api";
 import { saveBlob } from "../storage";
 import {
   CourseBadge,
@@ -26,10 +28,10 @@ import {
 import type { Material } from "../types";
 
 export function UploadMaterial({ onClose }: { onClose: () => void }) {
-  const { user, courseId, update, notify } = useStore();
+  const { user, courseId, update, notify, refreshMaterials } = useStore();
   const myCourses = visibleCourses(user!);
   const [target, setTarget] = useState(
-    courseId === "all" ? myCourses[0].id : courseId,
+    courseId === "all" ? myCourses[0]?.id || "" : courseId,
   );
   const [visibility, setVisibility] = useState<"course" | "private">(
     user!.role === "teacher" ? "course" : "private",
@@ -51,8 +53,24 @@ export function UploadMaterial({ onClose }: { onClose: () => void }) {
   }
   async function submit() {
     if (!files.length) return setError("请先选择文件。");
+    if (!target) return setError("请先选择所属课程。");
     setSaving(true);
     try {
+      if (LIVE_MODE) {
+        let count = 0;
+        try {
+          for (const file of files) {
+            await uploadMaterial(file, user!, target, visibility);
+            count++;
+            setFiles((remaining) => remaining.filter((f) => f !== file));
+          }
+        } finally {
+          await refreshMaterials();
+        }
+        notify(`已上传 ${count} 份资料，请查看各文件的解析状态。`);
+        onClose();
+        return;
+      }
       const next: Material[] = [];
       for (const file of files) {
         const kind = validateFile(file);
@@ -158,8 +176,9 @@ export function UploadMaterial({ onClose }: { onClose: () => void }) {
         </div>
       )}
       <p className="inline-note">
-        文件保存在当前浏览器。PDF
-        和图片支持原文预览；文档转换、图文解析与知识点提取将在后端接入后可用。
+        {LIVE_MODE
+          ? "上传后由服务器保存和解析。解析失败时保留原件，并显示具体原因。"
+          : "文件保存在当前浏览器，真实解析未接入。"}
       </p>
       {error && (
         <p className="form-error" role="alert">
@@ -187,10 +206,23 @@ export function UploadMaterial({ onClose }: { onClose: () => void }) {
   );
 }
 export function Library() {
-  const { state, user, go, courseId, setCourseId } = useStore();
+  const {
+    state,
+    user,
+    go,
+    courseId,
+    setCourseId,
+    materialsLoading,
+    materialsError,
+    refreshMaterials,
+  } = useStore();
   const [upload, setUpload] = useState(false);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
+  useEffect(() => {
+    setSearch("");
+    setFilter("all");
+  }, [courseId]);
   const myCourses = visibleCourses(user!);
   const all = visibleMaterials(state, user!);
   const materials = all.filter(
@@ -203,7 +235,37 @@ export function Library() {
           : m.visibility === "course")),
   );
   const course = courses.find((c) => c.id === courseId);
-  const pinned = all.find((m) => m.id === "mat-tcp") || all[0];
+  let lastRead = "";
+  try {
+    lastRead =
+      localStorage.getItem(`learnbuddy-recent:${LIVE_MODE}:${user!.id}`) || "";
+  } catch {
+    /* optional preference */
+  }
+  const pinned = all.find((m) => m.id === lastRead);
+  if (LIVE_MODE && materialsLoading && !all.length)
+    return (
+      <div className="page">
+        <Empty title="正在读取课程资料…" />
+      </div>
+    );
+  if (LIVE_MODE && materialsError)
+    return (
+      <div className="page">
+        <Empty
+          title="暂时无法读取资料"
+          description={materialsError}
+          action={
+            <button
+              className="button secondary"
+              onClick={() => void refreshMaterials()}
+            >
+              重新加载
+            </button>
+          }
+        />
+      </div>
+    );
   return (
     <div className="page library-page">
       <PageHeading
@@ -225,38 +287,45 @@ export function Library() {
           </button>
         }
       />
-      <div className="course-cards">
-        {myCourses
-          .filter((c) => !course || c.id === courseId)
-          .map((c) => (
-            <button
-              key={c.id}
-              className={
-                "course-card " +
-                c.color +
-                (courseId === c.id ? " selected" : "")
-              }
-              onClick={() => setCourseId(courseId === c.id ? "all" : c.id)}
-            >
-              <span className="course-card-code">
-                {c.code}
-                <ChevronRight size={14} />
-              </span>
-              <strong>{c.title}</strong>
-              <p>{c.description}</p>
-              <div className="course-card-footer">
-                <span>
-                  {all.filter((m) => m.courseId === c.id).length} 份资料
+      {!course && (
+        <div className="course-cards">
+          {myCourses
+            .filter((c) => !course || c.id === courseId)
+            .map((c) => (
+              <button
+                key={c.id}
+                className={
+                  "course-card " +
+                  c.color +
+                  (courseId === c.id ? " selected" : "")
+                }
+                onClick={() => setCourseId(c.id)}
+              >
+                <span className="course-card-code">
+                  {c.code}
+                  <ChevronRight size={14} />
                 </span>
-                <span className="dot-separator" />
-                <span>
-                  {users.find((u) => u.id === c.teacherId)!.name} 老师
-                </span>
-              </div>
-              <MiniArt variant={c.id} />
-            </button>
-          ))}
-      </div>
+                <strong>{c.title}</strong>
+                <p>{c.description}</p>
+                <div className="course-card-footer">
+                  <span>
+                    {all.filter((m) => m.courseId === c.id).length} 份资料
+                  </span>
+                  <span className="dot-separator" />
+                  <span>
+                    {users.find((u) => u.id === c.teacherId)!.name} 老师
+                  </span>
+                </div>
+                <MiniArt variant={c.id} />
+              </button>
+            ))}
+        </div>
+      )}
+      {course && (
+        <button className="text-button" onClick={() => setCourseId("all")}>
+          查看全部课程
+        </button>
+      )}
       {pinned && courseId === "all" && (
         <button
           className="continue-strip"
@@ -266,9 +335,7 @@ export function Library() {
             <FileIcon kind={pinned.kind} />
           </span>
           <span>
-            <small>
-              {user!.role === "teacher" ? "准备下一次课堂" : "从这里开始阅读"}
-            </small>
+            <small>继续上次阅读</small>
             <strong>{pinned.title}</strong>
           </span>
           <span className="continue-meta">原文 · 知识点 · 学习助手</span>
@@ -288,20 +355,20 @@ export function Library() {
             className={filter === "all" ? "active" : ""}
             onClick={() => setFilter("all")}
           >
-            全部
+            全部资料
           </button>
           <button
             className={filter === "course" ? "active" : ""}
             onClick={() => setFilter("course")}
           >
-            课程共享
+            老师共享
           </button>
           <button
             className={filter === "private" ? "active" : ""}
             onClick={() => setFilter("private")}
           >
             <LockKeyhole size={12} />
-            仅自己
+            我的私有资料
           </button>
         </div>
         <div className="search-field compact">
@@ -314,11 +381,18 @@ export function Library() {
           />
           {search && (
             <button onClick={() => setSearch("")} aria-label="清空搜索">
-              ×
+              <X size={14} />
             </button>
           )}
         </div>
       </div>
+      <p className="filter-explanation">
+        {filter === "private"
+          ? "仅显示你上传且设为私有的资料。"
+          : filter === "course"
+            ? "显示教师向本课程师生共享的资料。"
+            : "显示当前课程范围内，你有权查看的共享与私有资料。"}
+      </p>
       <div className="material-table">
         {" "}
         <div className="material-table-head">
@@ -343,15 +417,21 @@ export function Library() {
                     <>
                       {" "}
                       · <LockKeyhole size={10} />
-                      仅自己
+                      我的私有资料
                     </>
                   )}
-                  {m.sampleKey && " · 示例"}
+                  {m.sampleKey && " · 教学样例"}
                 </small>
               </span>
             </button>
             <CourseBadge id={m.courseId} />
-            <Status status={m.status} />
+            {LIVE_MODE && m.status !== "ready" ? (
+              <span className="status orange" title={parseErrorText(m)}>
+                {m.parseStatus === "failed" ? "解析失败" : "未完成解析"}
+              </span>
+            ) : (
+              <Status status={m.status} />
+            )}
             <span className="file-date">
               {m.date.slice(5).replace("-", "月")}日
             </span>

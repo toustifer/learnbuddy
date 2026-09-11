@@ -1,4 +1,5 @@
 import { documents } from "./seed";
+import { LIVE_MODE } from "./api";
 import type { ChatReference, Material, Submission } from "./types";
 
 export interface DshHandoff {
@@ -29,6 +30,16 @@ export function buildDshHandoff({
         `引用：${ref.title}${ref.detail ? `\n${ref.detail}` : ""}${ref.kind === "image" ? "\n这里只带入图片说明，图片文件尚未传入。" : ""}`,
       );
     }
+  } else if (material?.contextSections) {
+    parts.push(
+      material.contextSections
+        .map((page) => `第 ${page.page} 页 · ${page.chapter}\n${page.content}`)
+        .join("\n\n"),
+    );
+  } else if (material?.source === "server") {
+    parts.push(
+      "此服务器资料尚未带入正文，不能使用同名本地示例替代。请返回课件页读取正文后再引用。",
+    );
   } else if (material?.sampleKey && documents[material.sampleKey]) {
     parts.push(
       documents[material.sampleKey]
@@ -66,8 +77,9 @@ export function buildDshHandoff({
 export function dshUrl(): URL {
   // Development only: the separate Vite server uses the isolated local DSH preview.
   return new URL(
-    location.port === "5178" &&
-    ["127.0.0.1", "localhost"].includes(location.hostname)
+    !LIVE_MODE &&
+      location.port === "5178" &&
+      ["127.0.0.1", "localhost"].includes(location.hostname)
       ? `${location.protocol}//${location.hostname}:3089/`
       : "/",
     location.origin,

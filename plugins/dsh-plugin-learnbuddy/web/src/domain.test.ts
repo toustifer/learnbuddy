@@ -28,9 +28,17 @@ describe("account and course boundaries", () => {
     expect(authenticate("teacher.chen", "123")?.role).toBe("teacher");
   });
   it("supports one teacher owning multiple courses and many-to-many enrollment", () => {
-    expect(visibleCourses(teacher).map((c) => c.id)).toEqual(["network", "os"]);
+    expect(visibleCourses(teacher).map((c) => c.id)).toEqual([
+      "network",
+      "os",
+      "cs101",
+    ]);
     expect(visibleCourses(otherTeacher).map((c) => c.id)).toEqual(["database"]);
-    expect(visibleCourses(student).map((c) => c.id)).toEqual(["network", "os"]);
+    expect(visibleCourses(student).map((c) => c.id)).toEqual([
+      "network",
+      "os",
+      "cs101",
+    ]);
     expect(visibleCourses(otherStudent).map((c) => c.id)).toEqual([
       "network",
       "database",

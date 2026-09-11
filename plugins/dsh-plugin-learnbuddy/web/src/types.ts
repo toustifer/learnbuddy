@@ -33,6 +33,7 @@ export interface QACard {
 }
 export type MaterialKind = "PDF" | "PPTX" | "PPT" | "DOCX" | "PNG" | "JPG";
 export interface Material {
+  source?: "server";
   id: string;
   courseId: string;
   ownerId: string;
@@ -48,6 +49,10 @@ export interface Material {
   knowledge: Knowledge[];
   cards: QACard[];
   teaching?: string;
+  contextSections?: { page: number; chapter: string; content: string }[];
+  parseStatus?: "parsed" | "pending" | "failed";
+  parseErrorCode?: string;
+  parseError?: string;
 }
 export interface Rubric {
   id: string;
@@ -131,4 +136,29 @@ export interface DocumentPage {
   diagram?: "handshake" | "queue" | "index";
   code?: string;
   caption?: string;
+}
+
+export interface ServerGrade {
+  rubricId: string;
+  title?: string;
+  max?: number;
+  score: number;
+  page?: number;
+  comment?: string;
+  evidence?: string;
+}
+export interface ServerReview {
+  submissionId: string;
+  status: string;
+  totalScore: number;
+  maxScore: number;
+  grades: ServerGrade[];
+  summary: string;
+  reviewVersion?: number;
+  submission?: {
+    assignmentId?: string;
+    blobId?: string;
+    fileName?: string;
+    failure?: string;
+  };
 }

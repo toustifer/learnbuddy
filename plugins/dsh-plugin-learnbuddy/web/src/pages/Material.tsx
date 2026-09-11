@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -18,6 +18,15 @@ import {
 } from "lucide-react";
 import { useStore } from "../store-context";
 import { canSeeMaterial } from "../domain";
+import {
+  LIVE_MODE,
+  getMaterialContext,
+  fileUrl,
+  parseErrorText,
+  type MaterialContext,
+} from "../api";
+import { ApiAssistant } from "../components/ApiAssistant";
+import { VoiceInput } from "../components/VoiceInput";
 import { courses, documents } from "../seed";
 import {
   AILabel,
@@ -30,7 +39,13 @@ import {
   Modal,
   downloadBlob,
 } from "../ui";
-import type { ChatReference, Knowledge, Material, QACard } from "../types";
+import type {
+  ChatReference,
+  DocumentPage,
+  Knowledge,
+  Material,
+  QACard,
+} from "../types";
 
 export { DshAssistant as ChatPanel } from "../components/DshAssistant";
 import { DshAssistant as ChatPanel } from "../components/DshAssistant";
@@ -45,6 +60,69 @@ function TeacherPreparation({
   const { update, job, busy, notify } = useStore();
   const [editing, setEditing] = useState<QACard | null>(null);
   const [teaching, setTeaching] = useState(material.teaching || "");
+  if (LIVE_MODE)
+    return (
+      <div className="preparation-content">
+        <h2>{tab === "teaching" ? "我的备课草稿" : "服务器答疑卡"}</h2>
+        <p className="inline-note">
+          {tab === "teaching"
+            ? "以下内容暂存于本次登录，不会发布给学生。可把准备好的问题带入右侧助手。"
+            : "已确认答疑卡优先用于课件答疑。当前服务尚未提供编辑、确认或发布接口。"}
+        </p>
+        {tab === "teaching" ? (
+          <>
+            <label>
+              讲解思路
+              <textarea
+                className="teaching-editor"
+                value={teaching}
+                onChange={(e) => {
+                  setTeaching(e.target.value);
+                  update((s) => ({
+                    ...s,
+                    materials: s.materials.map((m) =>
+                      m.id === material.id
+                        ? { ...m, teaching: e.target.value }
+                        : m,
+                    ),
+                  }));
+                }}
+                placeholder="写下讲解思路，或使用语音输入…"
+              />
+            </label>
+            <VoiceInput
+              onText={(text) => {
+                setTeaching((previous) => previous + text);
+                update((s) => ({
+                  ...s,
+                  materials: s.materials.map((m) =>
+                    m.id === material.id
+                      ? { ...m, teaching: (m.teaching || "") + text }
+                      : m,
+                  ),
+                }));
+              }}
+            />
+          </>
+        ) : material.cards.length ? (
+          material.cards.map((card) => (
+            <article className="qa-card" key={card.id}>
+              <header>
+                <h3>{card.question}</h3>
+                <span
+                  className={"status " + (card.confirmed ? "green" : "orange")}
+                >
+                  {card.confirmed ? "已确认" : "待确认"}
+                </span>
+              </header>
+              <p>{card.answer}</p>
+            </article>
+          ))
+        ) : (
+          <Empty title="暂无教师答疑卡" />
+        )}
+      </div>
+    );
   function saveCards(cards: QACard[]) {
     update((s) => ({
       ...s,
@@ -293,6 +371,44 @@ export function MaterialWorkspace({ id }: { id: string }) {
   const [open, setOpen] = useState(true);
   const [incoming, setIncoming] = useState<ChatReference | null>(null);
   const [selection, setSelection] = useState("");
+  const [context, setContext] = useState<MaterialContext | null>(null);
+  const [contextLoading, setContextLoading] = useState(LIVE_MODE);
+  const [contextError, setContextError] = useState("");
+  const [contextAttempt, setContextAttempt] = useState(0);
+  const [showFile, setShowFile] = useState(false);
+  useEffect(() => {
+    if (!material) return;
+    try {
+      localStorage.setItem(`learnbuddy-recent:${LIVE_MODE}:${user!.id}`, id);
+    } catch {
+      /* optional reading history */
+    }
+  }, [id, user, material?.id]);
+  useEffect(() => {
+    if (!LIVE_MODE || !user) return;
+    const controller = new AbortController();
+    setContextLoading(true);
+    setContextError("");
+    setContext(null);
+    void getMaterialContext(id, user.id, controller.signal)
+      .then((value) => {
+        if (controller.signal.aborted) return;
+        setContext(value);
+        update((s) => ({
+          ...s,
+          materials: s.materials.map((m) =>
+            m.id === id ? { ...m, contextSections: value.sections } : m,
+          ),
+        }));
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted) setContextError(e.message);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setContextLoading(false);
+      });
+    return () => controller.abort();
+  }, [id, user?.id, contextAttempt]);
   if (!material || !canSeeMaterial(user!, material))
     return (
       <Empty
@@ -308,7 +424,15 @@ export function MaterialWorkspace({ id }: { id: string }) {
         }
       />
     );
-  const docPages = material.sampleKey ? documents[material.sampleKey] : [];
+  const docPages: DocumentPage[] = LIVE_MODE
+    ? (context?.sections || []).map((section) => ({
+        heading: section.chapter || `第 ${section.page} 页`,
+        eyebrow: `PAGE ${section.page}`,
+        paragraphs: (section.content || "").split(/\n+/).filter(Boolean),
+      }))
+    : material.sampleKey
+      ? documents[material.sampleKey] || []
+      : [];
   const current = docPages[page - 1];
   function reference(
     title: string,
@@ -326,11 +450,28 @@ export function MaterialWorkspace({ id }: { id: string }) {
     });
   }
   function jump(n: number) {
-    setPage(Math.min(n, docPages.length || 1));
+    setShowFile(false);
+    setPage(
+      LIVE_MODE
+        ? Math.max(
+            1,
+            (context?.sections.findIndex((section) => section.page === n) ??
+              -1) + 1,
+          )
+        : Math.min(n, docPages.length || 1),
+    );
     setTab("original");
   }
   async function download() {
     try {
+      if (LIVE_MODE && material!.blobId) {
+        window.open(
+          fileUrl(material!.blobId, true),
+          "_blank",
+          "noopener,noreferrer",
+        );
+        return;
+      }
       if (material!.blobId)
         return await downloadBlob(material!.blobId, material!.title);
       const content = docPages
@@ -361,7 +502,9 @@ export function MaterialWorkspace({ id }: { id: string }) {
       <header className="document-titlebar">
         <button
           className="icon-button"
-          onClick={() => go({ page: "library" })}
+          onClick={() => {
+            go({ page: "library" });
+          }}
           aria-label="返回资料库"
         >
           <ArrowLeft size={17} />
@@ -372,7 +515,8 @@ export function MaterialWorkspace({ id }: { id: string }) {
           <span>
             <CourseBadge id={material.courseId} />
             <span className="desktop-only">
-              {material.sampleKey ? "示例内容" : "原始文件"} · {material.size}
+              {material.sampleKey ? "服务器教学样例" : "原始文件"} ·{" "}
+              {material.size}
             </span>
           </span>
         </div>
@@ -380,6 +524,12 @@ export function MaterialWorkspace({ id }: { id: string }) {
           <button
             className="icon-button"
             onClick={() => void download()}
+            disabled={LIVE_MODE && !material.blobId}
+            title={
+              LIVE_MODE && !material.blobId
+                ? "此教学样例未提供原始文件"
+                : "下载资料"
+            }
             aria-label="下载资料"
           >
             <ArrowDownToLine size={17} />
@@ -405,7 +555,7 @@ export function MaterialWorkspace({ id }: { id: string }) {
                 className={tab === "original" ? "active" : ""}
                 onClick={() => setTab("original")}
               >
-                原文
+                {LIVE_MODE ? "提取正文" : "原文"}
               </button>
               <button
                 className={tab === "knowledge" ? "active" : ""}
@@ -431,19 +581,34 @@ export function MaterialWorkspace({ id }: { id: string }) {
                 </>
               )}
             </div>
-            <div className="reader-tools">
+            {LIVE_MODE && material.blobId && (
+              <button
+                className="text-button"
+                onClick={() => {
+                  setTab("original");
+                  setShowFile((value) => !value);
+                }}
+              >
+                {showFile ? "阅读提取正文" : "查看原始文件"}
+              </button>
+            )}
+            <div className="reader-tools" title="调整提取正文的字号">
               <button
                 className="icon-button"
-                disabled={fontSize <= 13}
+                disabled={
+                  fontSize <= 13 || showFile || tab !== "original" || !current
+                }
                 onClick={() => setFontSize((x) => x - 1)}
                 aria-label="缩小正文"
               >
                 <Minus size={13} />
               </button>
-              <span>Aa</span>
+              <span aria-live="polite">{fontSize}px</span>
               <button
                 className="icon-button"
-                disabled={fontSize >= 19}
+                disabled={
+                  fontSize >= 23 || showFile || tab !== "original" || !current
+                }
                 onClick={() => setFontSize((x) => x + 1)}
                 aria-label="放大正文"
               >
@@ -452,8 +617,67 @@ export function MaterialWorkspace({ id }: { id: string }) {
             </div>
           </div>
           <div className="document-scroll">
+            {LIVE_MODE && material.status !== "ready" && (
+              <div className="parse-notice" role="status">
+                <strong>
+                  {material.parseStatus === "failed"
+                    ? "解析失败"
+                    : "未完成解析"}
+                </strong>
+                <p>{parseErrorText(material)}</p>
+                <button
+                  className="text-button"
+                  onClick={() => go({ page: "library" })}
+                >
+                  返回资料库重新上传
+                </button>
+              </div>
+            )}
+            {LIVE_MODE && contextLoading && (
+              <p className="inline-note" role="status">
+                正在读取课件正文…
+              </p>
+            )}
+            {LIVE_MODE && contextError && (
+              <div className="parse-notice" role="alert">
+                <p>{contextError}</p>
+                <button
+                  className="button secondary"
+                  onClick={() => setContextAttempt((value) => value + 1)}
+                >
+                  重新读取正文
+                </button>
+              </div>
+            )}
             {tab === "original" &&
-              (material.blobId ? (
+              (LIVE_MODE && showFile && material.blobId ? (
+                <div className="remote-file-preview">
+                  <p>
+                    <a
+                      className="text-button"
+                      href={fileUrl(material.blobId)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      在新标签中查看原件
+                    </a>
+                  </p>
+                  {material.kind === "PDF" ? (
+                    <iframe
+                      title={material.title + "原始文件"}
+                      src={
+                        fileUrl(material.blobId) +
+                        "#page=" +
+                        (context?.sections[page - 1]?.page || page)
+                      }
+                    />
+                  ) : ["PNG", "JPG"].includes(material.kind) ? (
+                    <img src={fileUrl(material.blobId)} alt={material.title} />
+                  ) : (
+                    <p>此格式请下载原件，或切回提取正文阅读。</p>
+                  )}
+                </div>
+              ) : !LIVE_MODE && material.blobId ? (
                 <BlobPreview blobId={material.blobId} name={material.title} />
               ) : current ? (
                 <article
@@ -466,13 +690,20 @@ export function MaterialWorkspace({ id }: { id: string }) {
                 >
                   <div className="paper-topline">
                     <span>LEARNBUDDY / COURSE NOTES</span>
-                    <span>示例课件</span>
+                    <span>
+                      {LIVE_MODE
+                        ? material.sampleKey
+                          ? "服务器教学样例"
+                          : "服务器提取正文"
+                        : "示例课件"}
+                    </span>
                   </div>
                   <span className="document-eyebrow">{current.eyebrow}</span>
                   <h2>{current.heading}</h2>
                   <div className="paper-meta">
                     <span>
-                      {courses.find((c) => c.id === material.courseId)!.code}
+                      {courses.find((c) => c.id === material.courseId)?.code ||
+                        material.courseId}
                     </span>
                     <span>·</span>
                     <span>
@@ -483,6 +714,22 @@ export function MaterialWorkspace({ id }: { id: string }) {
                   {current.paragraphs.map((p, i) => (
                     <p key={i}>{p}</p>
                   ))}
+                  {LIVE_MODE &&
+                    context?.sections[page - 1]?.diagrams?.map((figure) => (
+                      <figure className="extracted-figure" key={figure.id}>
+                        <strong>{figure.title}</strong>
+                        <p>{figure.description}</p>
+                        <figcaption>{figure.caption}</figcaption>
+                        <button
+                          className="text-button"
+                          onClick={() =>
+                            reference(figure.title, figure.description, "image")
+                          }
+                        >
+                          引用图表说明
+                        </button>
+                      </figure>
+                    ))}
                   {current.diagram && (
                     <>
                       <Diagram
@@ -557,7 +804,7 @@ export function MaterialWorkspace({ id }: { id: string }) {
                       <div>
                         <h3>{k.title}</h3>
                         <p>{k.summary}</p>
-                        {user!.role === "teacher" && (
+                        {user!.role === "teacher" && !LIVE_MODE && (
                           <button
                             className="text-button knowledge-edit"
                             onClick={() => setEditKnowledge({ ...k })}
@@ -583,8 +830,16 @@ export function MaterialWorkspace({ id }: { id: string }) {
                   ))
                 ) : (
                   <Empty
-                    title="知识点等待解析"
-                    description="真实文件内容将在接入解析服务后整理，当前不会生成无依据的知识点。"
+                    title={
+                      material.parseStatus === "failed"
+                        ? "解析失败，暂无知识点"
+                        : "暂无可用知识点"
+                    }
+                    description={
+                      LIVE_MODE
+                        ? parseErrorText(material)
+                        : "真实文件解析待接入。"
+                    }
                   />
                 )}
                 {user!.role === "student" && material.knowledge.length > 0 && (
@@ -610,7 +865,7 @@ export function MaterialWorkspace({ id }: { id: string }) {
             <footer className="page-navigation">
               <span>
                 <Check size={12} />
-                示例内容已就绪
+                {LIVE_MODE ? "正文来自服务器" : "示例内容已就绪"}
               </span>
               <div>
                 <button
@@ -657,8 +912,16 @@ export function MaterialWorkspace({ id }: { id: string }) {
               </button>
             </div>
             {side === "chat" ? (
-              <ChatPanel
-                material={material}
+              <MaterialAssistant
+                material={
+                  LIVE_MODE
+                    ? {
+                        ...material,
+                        source: "server",
+                        contextSections: context?.sections,
+                      }
+                    : material
+                }
                 incoming={incoming}
                 onConsumed={() => setIncoming(null)}
                 onJump={jump}
@@ -761,4 +1024,8 @@ export function MaterialWorkspace({ id }: { id: string }) {
       )}
     </div>
   );
+}
+
+function MaterialAssistant(props: Parameters<typeof ApiAssistant>[0]) {
+  return LIVE_MODE ? <ApiAssistant {...props} /> : <ChatPanel {...props} />;
 }

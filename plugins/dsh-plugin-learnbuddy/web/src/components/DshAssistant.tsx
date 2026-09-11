@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileText, LoaderCircle, Plus, RefreshCw } from "lucide-react";
+import { LIVE_MODE, getMaterialContext } from "../api";
+import { VoiceInput } from "./VoiceInput";
 import { buildDshHandoff, embeddedDshUrl, sendToDsh } from "../dsh";
 import { chatKey } from "../domain";
 import { useStore } from "../store-context";
@@ -30,7 +32,7 @@ function EmbeddedAssistant({
   onConsumed,
   contextKey,
 }: Props & { contextKey: string }) {
-  const { user, state } = useStore();
+  const { user, state, notify } = useStore();
   const iframe = useRef<HTMLIFrameElement>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">(
     "loading",
@@ -38,6 +40,7 @@ function EmbeddedAssistant({
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState(0);
+  const [voiceDraft, setVoiceDraft] = useState("");
   const [picker, setPicker] = useState(false);
   const [contextStatus, setContextStatus] = useState("");
   const [handoff, setHandoff] = useState(() =>
@@ -46,6 +49,13 @@ function EmbeddedAssistant({
   const target = useMemo(() => embeddedDshUrl(), []);
   const consumed = useRef(onConsumed);
   consumed.current = onConsumed;
+
+  useEffect(() => {
+    if (!material?.contextSections) return;
+    setHandoff(
+      buildDshHandoff({ material, report, references: [], question: "" }),
+    );
+  }, [material?.contextSections]);
 
   useEffect(() => {
     if (!incoming) return;
@@ -166,7 +176,9 @@ function EmbeddedAssistant({
           <strong>{report ? "反馈解读" : "学习助手"}</strong>
           <span>读到哪里，就从哪里开始问</span>
         </div>
-        <span className="dsh-preview-label">本地预览</span>
+        <span className="dsh-preview-label">
+          {LIVE_MODE ? "DSH 会话" : "本地预览"}
+        </span>
       </div>
       <div className="dsh-embed-wrap">
         <iframe
@@ -212,8 +224,40 @@ function EmbeddedAssistant({
         )}
         <span role="status">{contextStatus}</span>
       </div>
+      <div className="dsh-voice-draft">
+        <VoiceInput
+          disabled={status !== "ready"}
+          onText={(text) => setVoiceDraft((previous) => previous + text)}
+        />
+        {voiceDraft && (
+          <>
+            <textarea
+              aria-label="DSH 听写草稿"
+              value={voiceDraft}
+              onChange={(event) => setVoiceDraft(event.target.value)}
+            />
+            <button
+              className="text-button"
+              disabled={status !== "ready"}
+              onClick={() => {
+                setHandoff(
+                  buildDshHandoff({
+                    material,
+                    report,
+                    references: [],
+                    question: voiceDraft,
+                  }),
+                );
+                setVoiceDraft("");
+              }}
+            >
+              将问题带入 DSH 草稿
+            </button>
+          </>
+        )}
+      </div>
       <p className="dsh-preview-note">
-        模型尚未配置 · 引用后可编辑，再手动发送
+        引用与听写不会自动发送；请在 DSH 输入框中核对后发送。
       </p>
       {picker && (
         <Modal
@@ -227,22 +271,34 @@ function EmbeddedAssistant({
               .map((m) => (
                 <button
                   key={m.id}
-                  onClick={() => {
-                    const source = buildDshHandoff({
-                      material: m,
-                      references: [],
-                      question: "",
-                    });
-                    cite([
-                      {
-                        id: m.id,
-                        title: m.title,
-                        kind: "material",
-                        materialId: m.id,
-                        detail: source.text,
-                      },
-                    ]);
-                    setPicker(false);
+                  onClick={async () => {
+                    try {
+                      const sourceMaterial = LIVE_MODE
+                        ? {
+                            ...m,
+                            contextSections: (
+                              await getMaterialContext(m.id, user!.id)
+                            ).sections,
+                          }
+                        : m;
+                      const source = buildDshHandoff({
+                        material: sourceMaterial,
+                        references: [],
+                        question: "",
+                      });
+                      cite([
+                        {
+                          id: m.id,
+                          title: m.title,
+                          kind: "material",
+                          materialId: m.id,
+                          detail: source.text,
+                        },
+                      ]);
+                      setPicker(false);
+                    } catch (e) {
+                      notify((e as Error).message, true);
+                    }
                   }}
                 >
                   <FileIcon kind={m.kind} />
