@@ -26,14 +26,19 @@ plugins/dsh-plugin-learnbuddy/
 
 在当前机器或远端测试服务器上，若 DSH 配置文件位于 `~/.dsh/profiles/web/` 或项目的 `cordis.patch.yml` 中：
 
-1. 进入插件目录安装本地引用：
+1. 进入插件目录安装依赖（**含原生绑定，必须执行**，详见下一节）：
    ```bash
-   # 在 DSH profile 目录下添加本本地插件
+   cd plugins/dsh-plugin-learnbuddy
+   npm ci          # 无 lockfile 时用 npm install
+   ```
+
+2. 在 DSH profile 目录下添加本本地插件：
+   ```bash
    dsh plugin --profile web add "D:/obi/collected_program/经历/learnbuddy/plugins/dsh-plugin-learnbuddy"
    ```
    *或者在开发配置中直接引入 `plugins/dsh-plugin-learnbuddy`。*
 
-2. 启动 DSH Web 实例：
+3. 启动 DSH Web 实例：
    ```bash
    dsh web
    ```
@@ -43,6 +48,84 @@ plugins/dsh-plugin-learnbuddy/
    [LearnBuddy Plugin] Skills registered successfully.
    [LearnBuddy Plugin] Web API routes mounted at /api/learnbuddy/*
    ```
+
+---
+
+## 课件真实解析（anydoc）：依赖安装、失败语义与内嵌图片
+
+`src/services/material-parser.js` 从 **task-14 起用真实解析引擎** `@firecrawl/anydoc`
+（Rust napi-rs 原生绑定）解析 PDF / DOCX / PPTX / XLSX / ODT·ODS·ODP / RTF / EPUB / CSV / DOC（含 .docm/.pptm 等容器变体）。
+
+> ⚠️ task-14 之前，`_parsePdfBasic()` / `_parseOfficeDoc()` **根本不读文件**，直接返回写死的示例文字，
+> 且 `catch` 分支把解析失败伪装成「解析成功」。那段假实现已删除，**不得恢复**。
+
+### 依赖安装（原生绑定按平台分发）
+
+| 平台 | 需要装上的可选依赖 |
+| --- | --- |
+| 服务器（Linux x64 glibc） | `@firecrawl/anydoc-linux-x64-gnu` |
+| 本机（Windows x64） | `@firecrawl/anydoc-win32-x64-msvc` |
+| macOS | `@firecrawl/anydoc-darwin-x64` / `-arm64` |
+
+```bash
+cd plugins/dsh-plugin-learnbuddy
+npm ci            # 依赖 package-lock.json，按当前平台自动拉取对应 .node 绑定
+# 无 lockfile 的旧部署：npm install @firecrawl/anydoc
+node -e "import('@firecrawl/anydoc').then(m=>console.log(typeof m.toMarkdownBytes))"   # 应打印 function
+```
+
+若某个平台的可选依赖没装上（离线安装、镜像裁剪、`--no-optional`），代码会给出**可读错误**
+（`errorCode:"engineUnavailable"` 并指出当前平台该装哪个包），**不会**让上传链路直接崩。
+
+### 失败语义（禁止静默失败）
+
+`parseAndExtract(filePath, originalName)` 签名与成功返回结构不变，失败时返回**显式失败标记**：
+
+```json
+{ "status": "failed", "errorCode": "malformed", "error": "文档解析失败 [malformed]：...",
+  "knowledgePoints": [], "rawContentSummary": "", "pages": 0 }
+```
+
+| `errorCode` | 含义 |
+| --- | --- |
+| `malformed` | 结构损坏、提不出有意义内容 |
+| `encrypted` | 加密 / 需要密码 |
+| `unsupported` | 格式不支持（内容与扩展名都识别不出来） |
+| `resourceLimit` | 越过解压 / 嵌套 / 节点数安全上限 |
+| `missingPart` | 关键部件缺失 |
+| `io` | 文件读不出来 |
+| `needsOcr` | PDF 是扫描件/纯图片（错误信息里带具体页码；anydoc 不做 OCR） |
+| `engineUnavailable` | anydoc 或当前平台原生绑定没装上 |
+
+**失败时绝不调用 LLM 编造知识点**，`knowledgePoints` 恒为 `[]`；
+上传接口会把 `parseStatus` / `parseError` / `parseErrorCode` 一并返回，材料状态记为 `pending`（不是 `ready`），
+原件仍安全落盘、可在线预览。
+
+> 注意区分两层降级：**解析层失败**一律如实报错（上表）；**模型层失败**（未配密钥 / 模型不可用）
+> 仍走既有的标杆模板兜底（见上一节），因为正文此时已经真实解析出来了。
+
+### 内嵌图片（真·多模态）
+
+用 `toDocument()` 把文档里的图片资产（PPT 图表、文档截图）抽出来，与正文一起送**视觉模型**
+（`LLM_MODEL_VISION=deepseek-flash`）。上限保护（硬需求）：
+
+- 最多 `MAX_EMBEDDED_IMAGES = 4` 张；
+- 单张不超过 `MAX_EMBEDDED_IMAGE_BYTES = 2MB`；
+- 超限/非图片资产**跳过并计数**（`result.embeddedImages = { total, inlined, skipped }`）并记日志，不让解析失败。
+
+PDF 的 Markdown 通道没有文档模型（`toDocument` 对 PDF 报 `unsupported`），故 PDF 目前只取正文。
+
+### 回归测试（真实文件，不 mock 解析）
+
+```bash
+cd plugins/dsh-plugin-learnbuddy
+npm test                       # 全量；task-14 基线 164 → 新增 14 个真解析用例
+node --test test/material-parser-real.test.js
+```
+
+测试用的真实 PDF / DOCX / XLSX 字节由零依赖构造器
+[`scripts/lib/doc-fixtures.mjs`](scripts/lib/doc-fixtures.mjs) 现场生成（与 `scripts/lib/png-text.mjs` 同一纪律），
+断言的是「解析出来的内容 == 我们写进去的内容」，因此能真正证明是**真解析**而不是写死文字。
 
 ---
 
@@ -173,6 +256,9 @@ plugins/dsh-plugin-learnbuddy/
 **未配置任何密钥时不会报错**：客户端进入 Mock 模式，返回结构合法的
 `{ ok: true, content, mock: true }`（评分意图会返回可解析的 Rubric JSON），
 `MaterialParser` 也会降级到内置标杆知识点模板。因此演示环境即使没配 key 也能完整走通流程。
+
+> ⚠️ 该兜底**只覆盖模型层**：文件本身的解析失败（损坏 / 加密 / 不支持格式 / 扫描件）一律如实上报
+> `status:"failed"`，不会用假正文伪装成成功 —— 见下方「课件真实解析（anydoc）」一节。
 
 ### 服务器上线：环境变量与重启命令
 

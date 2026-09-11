@@ -404,7 +404,10 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         const savedFile = await storage.saveFile(fileBuffer, fileName);
 
         // 2. 知识点抽取与多模态解析
+        //    task-14：解析失败时 parseAndExtract 返回 status:"failed" + errorCode，
+        //    这里**如实透出**（原件已落盘可预览，但 material 标为 pending 且不伪造知识点）。
         const parsed = await materialParser.parseAndExtract(savedFile.filePath, fileName);
+        const parseFailed = parsed.status === "failed";
 
         // 3. 写入 DatabaseStore 持久化存储
         const materialId = `mat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -415,7 +418,8 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
           title: fileName,
           kind: (savedFile.ext.replace(".", "") || "PDF").toUpperCase(),
           visibility,
-          status: "ready",
+          // materials.status 只允许 ready/pending；解析失败记 pending，绝不伪装 ready
+          status: parseFailed ? "pending" : "ready",
           size: savedFile.sizeFormatted,
           pages: parsed.pages || 1,
           date: new Date().toISOString().slice(0, 10),
@@ -429,6 +433,9 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         return sendJson(res, 200, {
           ok: true,
           material: createdMaterial,
+          parseStatus: parsed.status,
+          parseError: parsed.error || null,
+          parseErrorCode: parsed.errorCode || null,
           file: {
             id: savedFile.fileId,
             name: savedFile.originalName,
