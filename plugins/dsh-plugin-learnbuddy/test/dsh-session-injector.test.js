@@ -734,6 +734,44 @@ test("401 刷新重试：上游换密钥后，网关重读凭据文档并重试�
   }
 });
 
+test("带 body 的 POST 遇 401：不重放（stream 已消费），如实透传 401 且不挂死", async () => {
+  const secret = newSecret();
+  const otherSecret = newSecret();
+  const warned = [];
+  const dsh = await startFakeDsh({ getSecret: () => otherSecret }); // 永远拒绝
+  const injector = new DshSessionInjector({
+    enabled: true,
+    credentialsFile: makeCredsFile("post-401", secret),
+    authority: dsh.authority,
+    warn: (m) => warned.push(m)
+  });
+  const gateway = createGateway({
+    dshPort: dsh.port,
+    dshAuthority: dsh.authority,
+    webDistDir: distDir,
+    store: new DatabaseStore(":memory:"),
+    storage: new StorageService({ baseDir: path.join(tmpRoot, "uploads-post") }),
+    sessionInject: injector,
+    warn: (m) => warned.push(m)
+  });
+  const port = await listen(gateway.server);
+  try {
+    const body = JSON.stringify({ type: "client-request", rpcId: "r1", method: "x", payload: {} });
+    const res = await rawRequest(port, "/api/anything", {
+      method: "POST",
+      body,
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) }
+    });
+    assert.equal(res.status, 401, "带 body 的请求无法重放，必须如实 401");
+    assert.equal(dsh.state.authFailures, 1, "只应请求上游一次（不重放 body）");
+    assert.equal(injector.refreshCount, 1, "仍然尝试过一次刷新（便于诊断）");
+    assert.ok(warned.some((m) => /未重试/u.test(m)), "应告警说明为何没有重试");
+  } finally {
+    await close(gateway.server);
+    await dsh.close();
+  }
+});
+
 test("401 重试仍失败：不无限重试，透传 401 并记录告警", async () => {
   const secret = newSecret();
   const otherSecret = newSecret();

@@ -119,7 +119,6 @@ export function createGateway(options = {}) {
    */
   function proxyHttp(req, res, state = {}) {
     const attempt = state.attempt || 0;
-    const bodyForwarded = state.bodyForwarded === true;
     const cookieHeader = injector ? injector.headers(req) : undefined;
 
     const proxyReq = http.request({
@@ -133,16 +132,14 @@ export function createGateway(options = {}) {
       if (proxyRes.statusCode === 401 && injector) {
         const decision = injector.handleUnauthorized({ attempt });
         proxyRes.resume(); // 丢弃 401 响应体，避免连接悬挂
-        if (decision.retry) {
-          // 带 body 的请求已把流消费掉，无法无损重放：只对无 body 的方法重试
-          // （内嵌助手入口 GET /?learnbuddy=embedded 正是这一路径）
-          if (!bodyForwarded) {
-            proxyHttp(req, res, { attempt: attempt + 1, bodyForwarded });
-            return;
-          }
+        // 注意：必须读 state 的当前值而不是进入函数时的快照——本次转发已经把
+        // 请求流消费掉了（正文在下面 pipe 后置位），有 body 就无法无损重放。
+        if (decision.retry && state.bodyForwarded !== true) {
+          proxyHttp(req, res, { attempt: attempt + 1, bodyForwarded: false });
+          return;
         }
         warn(
-          `[LearnBuddy Gateway] DSH 返回 401，未重试（${decision.reason})；透传 401 给公网客户端。` +
+          `[LearnBuddy Gateway] DSH 返回 401，未重试（${decision.reason}）；透传 401 给公网客户端。` +
           `请确认 ${SESSION_INJECT_ENV}=1 且凭据文档可用。`
         );
       }

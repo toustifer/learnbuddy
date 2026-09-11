@@ -449,11 +449,12 @@ export class DshSessionInjector {
     if (!this.enabled) return { retry: false, reason: "inject-disabled" };
     if (attempt >= this.maxRetries) return { retry: false, reason: "retry-exhausted" };
 
-    this.refreshCount += 1;
     this.log(`[DSH SessionInject] 上游返回 401，重读凭据后重试（第 ${attempt + 1} 次）: ${this.credentialsFile}`);
     const credential = this.refreshCredentials();
     if (credential === undefined) return { retry: false, reason: "credential-unavailable" };
 
+    // 只有在确实拿到新凭据、即将重试时才计数（重试次数上限由 attempt 控制）
+    this.refreshCount += 1;
     const issuedAt = this.now();
     const cookie = mintSessionCookie({
       authority: this.authority,
