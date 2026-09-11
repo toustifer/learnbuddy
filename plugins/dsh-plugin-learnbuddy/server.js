@@ -10,6 +10,8 @@
  *    - WebSocket：server.on("upgrade") 透传 Upgrade，使 /api/remote.mux 等路径可返回 101
  * 5. 可选：为转发到 DSH 的请求注入浏览器会话凭据（Cookie），使内嵌助手免 token 可用
  *    - 由 LEARNBUDDY_DSH_SESSION_INJECT=1 显式开启，默认关闭（见 src/services/dsh-session-injector.js）
+ *    - 开启时同时把 Host 与 Origin 改写为 127.0.0.1:<DSH_PORT>：DSH 的 isTrustedApiRequest
+ *      要求「带 Origin 时必须与 Host 同源」，只改 Host 会被 CSRF 栅栏回 403（HTTP + WS 同因）
  * 6. 支持单入口登录（user/123）、课件持久化管理、答疑卡优先匹配、AutoGrader 多模态评分
  */
 
@@ -83,8 +85,28 @@ export function createGateway(options = {}) {
   registerLearnBuddyRoutes(fakeCtx, { store, storage });
 
   /**
+   * 是否把浏览器标记改写成与 authority 同源。
+   *
+   * 为什么必须改写 Origin：
+   *   DSH 的 `isTrustedApiRequest`（dsh-client-connection L201-215）在**会话鉴权之前**
+   *   执行，判定三件事：Host 必须 loopback、`sec-fetch-site` 不能是 cross-site、
+   *   **带 Origin 时必须 `new URL(origin).host === Host`**。
+   *   网关把 Host 改写成了 127.0.0.1:<dshPort>，浏览器发来的 Origin 却仍是公网 authority
+   *   （如 http://129.204.52.57:3088）-> 跨源 -> 403（HTTP 与 WebSocket upgrade 都是）。
+   *   所以 Host 与 Origin 必须一起改写，二者缺一不可。
+   *
+   * 只在会话注入开启时改写：关闭时 Origin 原样透传，行为与开启本能力之前完全一致。
+   * 随注入器开关实时生效（开关是部署方的安全阀）。
+   */
+  const originRewriteEnabled = () => injector !== undefined && injector.enabled === true;
+
+  /** 改写后的 Origin：与被覆盖的 Host authority 严格同源 */
+  const dshOrigin = `http://${dshAuthority}`;
+
+  /**
    * 构造转发到 DSH 的请求头：
    * - Host 覆盖为 127.0.0.1:<dshPort>，与 DSH cookie 的 authority 对齐
+   * - 注入开启时把 Origin 一并改写成同一 authority（否则 DSH 的 CSRF 栅栏回 403）
    * - 可选注入会话凭据 Cookie（默认关闭）
    * - 剥掉会破坏连接语义的逐跳头
    */
@@ -94,6 +116,13 @@ export function createGateway(options = {}) {
     delete headers["proxy-connection"];
     delete headers["keep-alive"];
     if (cookieHeader !== undefined) headers.cookie = cookieHeader;
+    if (originRewriteEnabled()) {
+      // 只在「请求确实带了 Origin」时改写；不带就保持不带（DSH 把无 Origin 当作非浏览器客户端放行，
+      // 凭空添加反而改变语义）。任何取值都改写，包括 `Origin: null`（sandboxed iframe 的
+      // opaque origin）——DSH 用 new URL() 解析它同样会失败并回 403。
+      const origin = headers.origin;
+      if (typeof origin === "string" && origin !== "") headers.origin = dshOrigin;
+    }
     return headers;
   }
 
@@ -281,7 +310,20 @@ export function createGateway(options = {}) {
     clientSocket.on("error", () => proxyReq.destroy());
   });
 
-  return { server, middlewares, webDistDir, injector, proxy: { buildProxyHeaders, dshAuthority } };
+  return {
+    server,
+    middlewares,
+    webDistDir,
+    injector,
+    proxy: {
+      buildProxyHeaders,
+      dshAuthority,
+      /** 是否正在把 Origin 改写成与 authority 同源（= 会话注入是否开启）；诊断用 */
+      get originRewrite() {
+        return originRewriteEnabled();
+      }
+    }
+  };
 
   /** 序列化上游 101 响应头（node 不提供现成的 writeHead 对 raw socket） */
   function formatUpgradeHead(proxyRes) {
