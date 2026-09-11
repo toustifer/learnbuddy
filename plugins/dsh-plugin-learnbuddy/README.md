@@ -86,13 +86,24 @@ node plugins/dsh-plugin-learnbuddy/server.js
 > 按用户当前决策先跑通效果，但**用完请立即关闭**；后续收紧方案（IP 白名单、单独受限 profile、
 > 反向代理层加 Basic Auth 等）不在本任务范围。
 
+开启时网关会把转发给 DSH 的 **`Host` 与 `Origin` 一起改写**成 `127.0.0.1:<DSH_PORT>`：
+DSH 的 `/api` 与 WebSocket 在鉴权之前还有一道信任栅栏（`isTrustedApiRequest`），
+要求「带 `Origin` 时必须与 Host 同源」。只改 Host 会让真实浏览器（`Origin: http://<公网地址>:3088`）
+拿到 **403**。细节与实测对照见
+[`docs/DSH-AUTH-REVERSE-ENGINEERING.md` §4.1](../../docs/DSH-AUTH-REVERSE-ENGINEERING.md)。
+
 ### 验收命令（服务器上执行）
 
 ```powershell
 # 内嵌助手入口：开启后应为 200（不再是 401）
 curl.exe -s -o NUL -w "%{http_code}`n" "http://127.0.0.1:3088/?learnbuddy=embedded"
-# WebSocket 握手：应为 101
-curl.exe -i -s -N -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" "http://127.0.0.1:3088/api/remote.mux" | Select-String "HTTP/"
+# ⚠️ 必须带上浏览器真实会发的 Origin（Host/Origin 都要是公网 authority），
+#    否则测的是一条浏览器根本不会走的路径（task-08 全绿却线上 403 的原因）
+curl.exe -s -o NUL -w "%{http_code}`n" -H "Host: 129.204.52.57:3088" -H "Origin: http://129.204.52.57:3088" -H "Sec-Fetch-Site: same-origin" "http://129.204.52.57:3088/?learnbuddy=embedded"
+# WebSocket 握手：带 Origin 时也应为 101（不带 Origin 时为 101 不算通过）
+curl.exe -i -s -N -H "Host: 129.204.52.57:3088" -H "Origin: http://129.204.52.57:3088" -H "Sec-Fetch-Site: same-origin" -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" "http://129.204.52.57:3088/api/remote.mux" | Select-String "HTTP/"
+# /api/* 带 Origin 不得再 403（真实 DSH 对未知路由回 404）
+curl.exe -s -o NUL -w "%{http_code}`n" -H "Host: 129.204.52.57:3088" -H "Origin: http://129.204.52.57:3088" "http://129.204.52.57:3088/api/nonexistent"
 # 静态托管与业务接口回归
 curl.exe -s -o NUL -w "%{http_code}`n" "http://127.0.0.1:3088/learnbuddy/"
 curl.exe -s "http://127.0.0.1:3088/api/learnbuddy/materials" | Select-Object -First 1
