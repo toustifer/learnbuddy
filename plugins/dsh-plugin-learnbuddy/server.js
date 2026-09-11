@@ -3,14 +3,16 @@
  * 
  * 作用：
  * 1. 监听 0.0.0.0:3088（公网可访问）
- * 2. 自动挂载并处理 /api/learnbuddy/* 全部业务接口（含文件存储、静态原件预览、附件下载与数据库持久化）
- * 3. 代理其它请求转发给本地 127.0.0.1:3080 (DSH Web 核心)
- * 4. 支持单入口登录（user/123）、课件持久化管理、答疑卡优先匹配、AutoGrader 多模态评分
+ * 2. 托管 /learnbuddy/* 前端静态产物（index.html + assets/*，含 SPA fallback），公网入口
+ * 3. 自动挂载并处理 /api/learnbuddy/* 全部业务接口（含文件存储、静态原件预览、附件下载与数据库持久化）
+ * 4. 代理其它请求转发给本地 127.0.0.1:3080 (DSH Web 核心)
+ * 5. 支持单入口登录（user/123）、课件持久化管理、答疑卡优先匹配、AutoGrader 多模态评分
  */
 
 import http from "node:http";
 import { pathToFileURL } from "node:url";
 import { registerLearnBuddyRoutes, getOrCreateDefaultStore } from "./src/routes/api.js";
+import { registerStaticHosting } from "./src/routes/static-hosting.js";
 import { defaultStorage } from "./src/services/storage.js";
 
 export const PORT = Number(process.env.PORT) || 3088;
@@ -26,6 +28,14 @@ export const fakeCtx = {
 
 export const store = getOrCreateDefaultStore();
 export const storage = defaultStorage;
+
+// 前端静态托管优先挂载：
+// - 只接管 /learnbuddy/*，并显式放行 /api/learnbuddy/* 给下面的业务路由
+// - 托管根目录可配置：LEARNBUDDY_WEB_DIST > 默认 plugins/dsh-plugin-learnbuddy/web/dist
+//   （前端 dist 产物由发布流程单独投放，不在本仓 git 内）
+export const webDistDir = registerStaticHosting(fakeCtx, {
+  webDistDir: process.env.LEARNBUDDY_WEB_DIST
+});
 
 registerLearnBuddyRoutes(fakeCtx, { store, storage });
 
@@ -74,6 +84,7 @@ const isMain = process.argv[1] && pathToFileURL(process.argv[1]).href === import
 if (isMain || (!process.env.TEST && process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT)) {
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`[LearnBuddy Gateway] Server listening on http://0.0.0.0:${PORT}`);
+    console.log(`[LearnBuddy Gateway] Serving frontend at http://0.0.0.0:${PORT}/learnbuddy/ (dist: ${webDistDir})`);
     console.log(`[LearnBuddy Gateway] Proxying backend to DSH http://127.0.0.1:${DSH_PORT}`);
   });
 }
