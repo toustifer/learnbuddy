@@ -23,6 +23,7 @@ import {
   Status,
   formatFileSize,
 } from "../ui";
+import { randomId } from "../lib/random-id";
 import type { Material } from "../types";
 
 export function UploadMaterial({ onClose }: { onClose: () => void }) {
@@ -56,7 +57,7 @@ export function UploadMaterial({ onClose }: { onClose: () => void }) {
       const next: Material[] = [];
       for (const file of files) {
         const kind = validateFile(file);
-        const id = crypto.randomUUID();
+        const id = randomId();
         await saveBlob(id, file);
         next.push({
           id,

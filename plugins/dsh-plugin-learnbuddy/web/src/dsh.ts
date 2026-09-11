@@ -1,3 +1,4 @@
+import { randomId } from "./lib/random-id";
 import { documents } from "./seed";
 import type { ChatReference, Material, Submission } from "./types";
 
@@ -54,7 +55,7 @@ export function buildDshHandoff({
   const boundedQuestion = question.trim().slice(0, 2000);
   return {
     type: "learnbuddy:context",
-    requestId: crypto.randomUUID(),
+    requestId: randomId(),
     title: title.slice(0, 300),
     text:
       boundedContext +

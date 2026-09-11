@@ -59,6 +59,7 @@ import {
   downloadBlob,
 } from "../ui";
 import { ChatPanel } from "./Material";
+import { randomId } from "../lib/random-id";
 import type { Assignment, Grade, Submission } from "../types";
 
 function studentName(id: string) {
@@ -111,7 +112,7 @@ function NewAssignment({ onClose }: { onClose: () => void }) {
           className="button primary"
           disabled={!title.trim()}
           onClick={() => {
-            const id = crypto.randomUUID();
+            const id = randomId();
             const a: Assignment = {
               id,
               courseId: target,
@@ -197,7 +198,7 @@ export function SubmitReport({
       }
       const created: Submission[] = [];
       for (let i = 0; i < ids.length; i++) {
-        const id = crypto.randomUUID();
+        const id = randomId();
         const file = files[i];
         if (file) await saveBlob(id, file);
         const prior = state.submissions.find(
@@ -841,7 +842,7 @@ export function AssignmentEditor({ id }: { id: string }) {
                     rubric: [
                       ...a.rubric,
                       {
-                        id: crypto.randomUUID(),
+                        id: randomId(),
                         title: "",
                         criterion: "",
                         max: 10,

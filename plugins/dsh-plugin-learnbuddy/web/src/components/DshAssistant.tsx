@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { FileText, LoaderCircle, Plus, RefreshCw } from "lucide-react";
 import { buildDshHandoff, embeddedDshUrl, sendToDsh } from "../dsh";
 import { chatKey } from "../domain";
+import { randomId } from "../lib/random-id";
 import { useStore } from "../store-context";
 import { Brand, Modal, FileIcon } from "../ui";
 import { visibleMaterials } from "../domain";
@@ -92,7 +93,7 @@ function EmbeddedAssistant({
       target,
       {
         type: "learnbuddy:init",
-        requestId: crypto.randomUUID(),
+        requestId: randomId(),
         contextKey,
       },
       "learnbuddy:ready",

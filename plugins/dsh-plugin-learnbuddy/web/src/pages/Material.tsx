@@ -30,6 +30,7 @@ import {
   Modal,
   downloadBlob,
 } from "../ui";
+import { randomId } from "../lib/random-id";
 import type { ChatReference, Knowledge, Material, QACard } from "../types";
 
 export { DshAssistant as ChatPanel } from "../components/DshAssistant";
@@ -68,7 +69,7 @@ function TeacherPreparation({
         }));
       } else {
         const cards = material.knowledge.map((k, i) => ({
-          id: crypto.randomUUID(),
+          id: randomId(),
           question:
             material.sampleKey === "handshake"
               ? [
@@ -318,7 +319,7 @@ export function MaterialWorkspace({ id }: { id: string }) {
     setOpen(true);
     setSide("chat");
     setIncoming({
-      id: crypto.randomUUID(),
+      id: randomId(),
       title,
       detail,
       kind,
