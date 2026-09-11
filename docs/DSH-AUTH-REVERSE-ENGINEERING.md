@@ -284,6 +284,22 @@ Get-Content "$env:USERPROFILE\.dsh\.credentials.yaml"
 node -e "import('./plugins/dsh-plugin-learnbuddy/src/services/dsh-session-injector.js').then(m=>{const i=new m.DshSessionInjector({enabled:true,authority:'127.0.0.1:3080'});console.log(i.headers({}));})"
 ```
 
+### 10.1 已完成的线上验证（2026-09-11，本机 DSH 0.1.5-rc.1 真实运行）
+
+用**真实 DSH（127.0.0.1:3080）+ 真实网关实例（隔离端口，未触碰线上 3088）**跑通：
+
+| 场景 | 结果 |
+| --- | --- |
+| 开关关闭 `GET /?learnbuddy=embedded` | **401**（与现状一致） |
+| 开关关闭 `/api/remote.mux` WebSocket | **401**（`ws` 库收到 HTTP 401） |
+| 开关开启 `GET /?learnbuddy=embedded` | **200**，HTML 28158 字节 |
+| 开关开启 `GET /` | **200** |
+| 开关开启 `/api/remote.mux` WebSocket | **101 Switching Protocols**，标准 `ws` 客户端握手成功 |
+| 开关开启 `/api/learnbuddy/materials` | **200**，`{ok:true}`（业务路由零回归） |
+| 直接打 DSH、**不覆盖 Host**（`Host: example.com:3080`） | 401 → 证明 Host 必须与 cookie authority 对齐 |
+
+复现：`node plugins/dsh-plugin-learnbuddy/_verify-live-e2e.mjs`（`_` 前缀文件不入库，仅为交付证据）。
+
 ## 11. 版本与失效风险
 
 - 结论基于 `@deepseek-ai/dsh@0.1.5-rc.1`。若升级后 `dsh-client-connection` 改变
