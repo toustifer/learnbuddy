@@ -216,6 +216,29 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     return 400;
   };
 
+  /**
+   * task-17：课程 / 作业 / 提交域的统一身份校验。
+   *
+   * 为什么强制 userId：
+   *   既有 `GET /materials` 在不带 `userId` 时会返回**全库**课件（含教师 `private` 资料），
+   *   是已确认的越权泄漏（见 `docs/API.md` §4.3）。新补的 5 个端点从第一天起就把
+   *   `userId` 作为必填身份，缺失一律 400，杜绝同款漏洞。
+   *
+   * @param {string | null | undefined} rawUserId
+   * @returns {{ok: true, user: object} | {ok: false, status: number, error: string}}
+   */
+  const requireUser = (rawUserId) => {
+    const userId = typeof rawUserId === "string" ? rawUserId.trim() : "";
+    if (!userId) {
+      return { ok: false, status: 400, error: "缺少必要参数: userId" };
+    }
+    const user = store.getUser(userId);
+    if (!user) {
+      return { ok: false, status: 404, error: `用户不存在: ${userId}` };
+    }
+    return { ok: true, user };
+  };
+
   const readRawBody = async (req) => {
     return new Promise((resolve, reject) => {
       const chunks = [];
@@ -943,6 +966,38 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
           error: err.message
         });
       }
+    }
+
+    // ==========================================
+    // 9. 课程 / 作业 / 提交域（task-17：补齐 5 个 P0 端点）
+    //
+    // 背景：store 早已实现 getUserCourses / getAssignments / getSubmissions /
+    // getSubmission / createSubmission，但**没有任何 HTTP 端点调用它们**，
+    // 导致 (1) 前端拿不到课程/作业/提交列表，评阅主线无法从 UI 走通；
+    // (2) 尤为严重：store.getSubmissions() 正是「非 published 报告的
+    // grades/summary 对学生置空」这条安全红线的实现处，无端点可达 = 红线形同虚设。
+    //
+    // 安全约定（本域 5 个端点一致）：
+    //   - `userId` **必填**，缺失 400；用户不存在 404；
+    //   - 无课程/记录访问权 403；资源不存在 404；
+    //   - 全部数据经 store 权限层产出，端点自身不做任何字段拼装绕过。
+    // ==========================================
+
+    // 9.1 课程列表：学生 = 已选课程，教师 = 所授课程
+    if (req.method === "GET" && pathname === "/api/learnbuddy/courses") {
+      const auth = requireUser(url.searchParams.get("userId"));
+      if (!auth.ok) {
+        return sendJson(res, auth.status, { ok: false, error: auth.error });
+      }
+
+      const courses = store.getUserCourses(auth.user.id);
+      return sendJson(res, 200, {
+        ok: true,
+        userId: auth.user.id,
+        role: auth.user.role,
+        count: courses.length,
+        courses
+      });
     }
 
     if (next) next();
