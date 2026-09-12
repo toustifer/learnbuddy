@@ -11,7 +11,10 @@ export function apply(ctx) {
       rows.push({
         kind: "global",
         name: "__LEARNBUDDY_UI__",
-        value: { previewWorkspace: process.env.LEARNBUDDY_PREVIEW_WORKSPACE },
+        value: {
+          previewWorkspace: process.env.LEARNBUDDY_PREVIEW_WORKSPACE,
+          publicOrigin: process.env.LEARNBUDDY_PUBLIC_ORIGIN || undefined,
+        },
       }),
     );
   }

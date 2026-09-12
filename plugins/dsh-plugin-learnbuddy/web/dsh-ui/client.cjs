@@ -243,7 +243,7 @@ exports.apply = function apply(ctx) {
       const previewPath = globalThis.__LEARNBUDDY_UI__?.previewWorkspace;
       if (
         typeof previewPath !== "string" ||
-        !["127.0.0.1", "localhost"].includes(location.hostname)
+        !canUseConfiguredWorkspace(globalThis.__LEARNBUDDY_UI__, location)
       )
         throw new Error("尚未关联课程学习会话，请先由后台完成课程工作区接入。");
       await ctx.sessions.refresh();
@@ -632,7 +632,7 @@ exports.apply = function apply(ctx) {
           const previewPath = globalThis.__LEARNBUDDY_UI__?.previewWorkspace;
           if (
             typeof previewPath === "string" &&
-            location.hostname === "127.0.0.1"
+            canUseConfiguredWorkspace(globalThis.__LEARNBUDDY_UI__, location)
           ) {
             const workspace = await ctx.workspaces.create({
               path: previewPath,
