@@ -1,3 +1,4 @@
+import { createId } from "../id";
 import { useEffect, useRef, useState } from "react";
 import {
   ChevronDown,
@@ -72,7 +73,7 @@ export function UploadMaterial({ onClose, initialVisibility, scope }: { onClose:
       const next: Material[] = [];
       for (const file of files) {
         const kind = validateFile(file);
-        const id = crypto.randomUUID();
+        const id = createId();
         await saveBlob(id, file);
         next.push({
           id,

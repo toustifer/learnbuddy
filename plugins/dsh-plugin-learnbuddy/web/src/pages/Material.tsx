@@ -1,3 +1,4 @@
+import { createId } from "../id";
 import { useEffect, useState } from "react";
 import {
   ArrowDownToLine,
@@ -146,7 +147,7 @@ function TeacherPreparation({
         }));
       } else {
         const cards = material.knowledge.map((k, i) => ({
-          id: crypto.randomUUID(),
+          id: createId(),
           question:
             material.sampleKey === "handshake"
               ? [
@@ -455,7 +456,7 @@ export function MaterialWorkspace({ id }: { id: string }) {
     setOpen(true);
     if (compact) switchMobileView("assistant");
     setIncoming({
-      id: crypto.randomUUID(),
+      id: createId(),
       title,
       detail,
       kind,

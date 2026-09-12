@@ -1,3 +1,4 @@
+import { createId } from "../id";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileText, LoaderCircle, Plus, RefreshCw, Sparkles } from "lucide-react";
 import { Button, Tooltip } from "@radix-ui/themes";
@@ -101,7 +102,7 @@ function EmbeddedAssistant({
       target,
       {
         type: "learnbuddy:init",
-        requestId: crypto.randomUUID(),
+        requestId: createId(),
         contextKey,
       },
       "learnbuddy:ready",

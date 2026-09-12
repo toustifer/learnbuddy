@@ -1,3 +1,4 @@
+import { createId } from "./id";
 import { documents } from "./seed";
 import { LIVE_MODE } from "./api";
 import type { ChatReference, Material, Submission } from "./types";
@@ -67,7 +68,7 @@ export function buildDshHandoff({
   const boundedQuestion = question.trim().slice(0, 2000);
   return {
     type: "learnbuddy:context",
-    requestId: crypto.randomUUID(),
+    requestId: createId(),
     title: title.slice(0, 300),
     text:
       boundedContext +
