@@ -22,6 +22,8 @@ import { AutoGraderEngine } from "../services/grader.js";
 import { MultimodalLLMClient } from "../services/llm.js";
 import { DatabaseStore } from "../db/store.js";
 import { StorageService, defaultStorage, getMimeType } from "../services/storage.js";
+import { registerTeachingRoutes } from "./teaching.js";
+import { registerSpeechRoutes } from "./speech.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,21 +49,11 @@ export function getOrCreateDefaultStore() {
 
 /**
  * 伴学答疑兜底答案（task-13：模型空输出 / 请求失败时使用，保证 answer 永不为空）。
- * 有课件图表上下文时给出与图表强相关的引导，否则给通用抓包排查建议。
+ * 只说明服务状态，不把固定学科建议伪装成对用户问题的回答。
  */
 function buildQaFallbackAnswer(question, matContext) {
-  if (matContext && matContext.diagrams && matContext.diagrams.length > 0) {
-    const firstDiag = matContext.diagrams[0];
-    return (
-      `【LearnBuddy 伴学助手】根据第 ${firstDiag.page} 页图表「${firstDiag.caption || firstDiag.title}」，` +
-      `请重点核查报文首部标志位与时序交互。针对问题「${question}」，` +
-      `建议确认客户端握手包序号 seq 是否连续递增。`
-    );
-  }
-  return (
-    `【LearnBuddy 伴学助手】针对问题「${question}」，` +
-    `建议先对照抓包过滤条件（如 tcp.port == 80），确认客户端握手包序号 seq 是否连续递增。`
-  );
+  return "【LearnBuddy 伴学助手】本次未获得可用的模型回答。请检查模型配置或稍后重试，也可以查看老师发布的答疑卡。" +
+    (matContext ? "所选课件仍可阅读，请回到原文核对。" : "");
 }
 
 // 内存 Mock 数据源（保留向后兼容与备用）
@@ -268,6 +260,9 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     res.end(JSON.stringify(data));
   };
 
+  registerTeachingRoutes(server, { store, readJson: parseJsonBody, sendJson });
+  registerSpeechRoutes(server, { sendJson });
+
   server.use(async (req, res, next) => {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     const pathname = url.pathname;
@@ -295,7 +290,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         return sendJson(res, 200, {
           ok: true,
           token: `token-${dbUser.id}-${Date.now()}`,
-          user: dbUser
+          user: { ...dbUser, courses: store.getUserCourses(dbUser.id) }
         });
       }
 
@@ -695,7 +690,6 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     if (req.method === "POST" && pathname === "/api/learnbuddy/qa/ask") {
       const body = await parseJsonBody(req);
       const { question = "", courseId = null, materialId = null, userId = null } = body;
-      const lowerQ = question.toLowerCase();
 
       // 1. 使用 MaterialContextService 进行高精度答疑卡检索
       const matchedCards = materialContextService.searchAnswerCards(courseId, question, {
@@ -706,21 +700,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
       });
 
       // 若有得分高于 40 的强命中答疑卡，直接以教师权威答疑卡返回
-      let hitCard = matchedCards.length > 0 && matchedCards[0].score >= 40 ? matchedCards[0] : null;
-
-      // 2. 备选 Mock 答疑卡匹配
-      if (!hitCard) {
-        const mockHit = mockData.qaCards.find((card) =>
-          card.triggerKeywords.some((kw) => lowerQ.includes(kw.toLowerCase()))
-        );
-        if (mockHit) {
-          hitCard = {
-            id: mockHit.id,
-            title: mockHit.title,
-            answer: mockHit.answer
-          };
-        }
-      }
+      const hitCard = matchedCards.length > 0 && matchedCards[0].score >= 40 ? matchedCards[0] : null;
 
       if (hitCard) {
         return sendJson(res, 200, {
@@ -763,7 +743,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         // 会返回 200 + 空 content 而不报错；llm.js 已给出 ok:false + truncated + error 的诊断，
         // 这里绝不能把空串当成有效答案回给前端（否则学生会看到一条空白回答）。
         const answer = typeof resp.content === "string" ? resp.content.trim() : "";
-        if (resp.ok === false || answer.length === 0) {
+        if (resp.ok === false || resp.mock === true || answer.length === 0) {
           if (resp.truncated || resp.error) {
             console.warn(`[LearnBuddy QA] 模型返回空 content，使用兜底答案。诊断: ${resp.error || "未知"}`);
           }

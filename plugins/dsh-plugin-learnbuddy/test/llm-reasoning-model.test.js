@@ -536,6 +536,17 @@ test("【路由防护】POST /qa/ask：模型返回空 content（截断）→ an
   }
 });
 
+test("【路由防护】未配置模型时返回明确降级提示，不冒充模型或教师答案", async () => {
+  const { port, store, server } = await startApiServer({ llmClient: new MultimodalLLMClient({ env: {} }) });
+  try {
+    const res = await postJson(port, "/api/learnbuddy/qa/ask", { question: "解释一个不在教师答疑卡中的概念" });
+    const data = JSON.parse(res.body.toString("utf-8"));
+    assert.equal(data.fallback, true);
+    assert.match(data.answer, /未获得可用的模型回答/);
+    assert.doesNotMatch(data.answer, /tcp.port|seq/);
+  } finally { server.close(); store.close(); }
+});
+
 test("【路由回归】POST /qa/ask：模型正常返回内容时行为不变（原样透出 answer，无 fallback 标记）", async () => {
   const fake = await startFakeProvider(() => ({
     body: reasoningResponse({
