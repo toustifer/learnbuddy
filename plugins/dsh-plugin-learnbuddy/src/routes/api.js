@@ -1032,6 +1032,204 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
       });
     }
 
+    // 9.3 提交列表（核心）
+    //     必须经由 store.getSubmissions(userId, assignmentId)：
+    //     教师看全班完整评分；学生只看自己的，且**非 published 报告**的
+    //     grades / summary / failure 被强制置空。
+    //     这是「未发布成绩不泄漏给学生」这条安全红线在 HTTP 层的唯一生效点。
+    if (req.method === "GET" && pathname === "/api/learnbuddy/submissions") {
+      const auth = requireUser(url.searchParams.get("userId"));
+      if (!auth.ok) {
+        return sendJson(res, auth.status, { ok: false, error: auth.error });
+      }
+
+      const assignmentId = url.searchParams.get("assignmentId");
+      if (!assignmentId) {
+        return sendJson(res, 400, { ok: false, error: "缺少必要参数: assignmentId" });
+      }
+
+      const assignment = store.getAssignment(assignmentId);
+      if (!assignment) {
+        return sendJson(res, 404, { ok: false, error: `作业不存在: ${assignmentId}` });
+      }
+      if (!store.hasCourse(auth.user.id, assignment.courseId)) {
+        return sendJson(res, 403, {
+          ok: false,
+          error: `权限不足：用户「${auth.user.id}」无权访问课程「${assignment.courseId}」的提交记录`
+        });
+      }
+
+      const submissions = store.getSubmissions(auth.user.id, assignmentId);
+      return sendJson(res, 200, {
+        ok: true,
+        userId: auth.user.id,
+        role: auth.user.role,
+        assignmentId,
+        courseId: assignment.courseId,
+        count: submissions.length,
+        submissions
+      });
+    }
+
+    // 9.4 单份提交详情
+    //     越权与不存在的语义区分（与 review-publish 的 403 风格一致）：
+    //     记录确实不存在 → 404；存在但无权访问 → 403。
+    const submissionDetailMatch = pathname.match(/^\/api\/learnbuddy\/submissions\/([^/]+)$/);
+    if (req.method === "GET" && submissionDetailMatch) {
+      const auth = requireUser(url.searchParams.get("userId"));
+      if (!auth.ok) {
+        return sendJson(res, auth.status, { ok: false, error: auth.error });
+      }
+
+      const submissionId = decodeURIComponent(submissionDetailMatch[1]);
+      const exists = store.getSubmission(submissionId);
+      if (!exists) {
+        return sendJson(res, 404, { ok: false, error: `提交记录不存在: ${submissionId}` });
+      }
+
+      // 走权限层：学生看他人记录 / 跨课程 → null；自己的非 published → 字段置空
+      const submission = store.getSubmission(submissionId, auth.user.id);
+      if (!submission) {
+        return sendJson(res, 403, {
+          ok: false,
+          error: `权限不足：用户「${auth.user.id}」无权访问提交记录「${submissionId}」`
+        });
+      }
+
+      return sendJson(res, 200, { ok: true, submission });
+    }
+
+    // 9.5 创建提交（学生交报告）
+    //     请求体支持两种形态（复用既有 storage / multipart 机制）：
+    //       a) JSON: { assignmentId, studentId, fileName, content(base64 或 data URL), encoding? }
+    //       b) multipart/form-data: 字段 assignmentId / studentId + 文件字段（如 file）
+    //     为什么用 base64 JSON 作为主契约：前端只需 `File → ArrayBuffer → base64`，
+    //     与既有 `POST /materials/upload` 的 JSON 分支完全一致，无需额外 multipart 编码库。
+    //     报告文件一律经 StorageService 落盘，**数据库只存 blobId（SHA-256 文件名）**，
+    //     绝不把大 base64 写进 submissions 表。
+    if (req.method === "POST" && pathname === "/api/learnbuddy/submissions") {
+      const contentType = req.headers["content-type"] || "";
+      let body = {};
+      let fileBuffer = null;
+      let fileName = "";
+
+      if (contentType.includes("multipart/form-data")) {
+        const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+        if (!boundaryMatch) {
+          return sendJson(res, 400, { ok: false, error: "未找到有效的 multipart boundary" });
+        }
+        const rawBuffer = await readRawBody(req);
+        const parsedForm = parseMultipartFormData(rawBuffer, boundaryMatch[1] || boundaryMatch[2]);
+        body = parsedForm.fields || {};
+        if (!parsedForm.file) {
+          return sendJson(res, 400, { ok: false, error: "未包含上传文件字段" });
+        }
+        fileBuffer = parsedForm.file.buffer;
+        fileName = parsedForm.file.fileName || body.fileName || "";
+      } else {
+        body = await parseJsonBody(req);
+        fileName = typeof body.fileName === "string" ? body.fileName.trim() : "";
+        const rawContent = body.content ?? body.fileData ?? body.buffer;
+        if (typeof rawContent === "string" && rawContent.length > 0) {
+          const isBase64 = body.encoding === "base64" || rawContent.startsWith("data:");
+          const payload = isBase64 && rawContent.includes(",") ? rawContent.split(",")[1] : rawContent;
+          fileBuffer = Buffer.from(payload, isBase64 ? "base64" : "utf-8");
+        }
+      }
+
+      const actorRaw = body.studentId || body.userId;
+      const auth = requireUser(actorRaw);
+      if (!auth.ok) {
+        return sendJson(res, auth.status, {
+          ok: false,
+          // 该端点身份字段名为 studentId（兼容 userId 别名），错误文案对前端更友好
+          error: auth.status === 400 ? "缺少必要参数: studentId" : auth.error
+        });
+      }
+
+      const assignmentId = typeof body.assignmentId === "string" ? body.assignmentId.trim() : "";
+      if (!assignmentId) {
+        return sendJson(res, 400, { ok: false, error: "缺少必要参数: assignmentId" });
+      }
+      if (!fileName) {
+        return sendJson(res, 400, { ok: false, error: "缺少必要参数: fileName" });
+      }
+      if (!fileBuffer || fileBuffer.length === 0) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: "缺少必要参数: content（报告文件内容，base64 或 data URL；multipart 时为文件字段）"
+        });
+      }
+
+      if (auth.user.role !== "student") {
+        return sendJson(res, 403, {
+          ok: false,
+          error: `权限不足：用户「${auth.user.id}」非学生角色，禁止提交报告`
+        });
+      }
+
+      const assignment = store.getAssignment(assignmentId);
+      if (!assignment) {
+        return sendJson(res, 404, { ok: false, error: `作业不存在: ${assignmentId}` });
+      }
+      if (!store.hasCourse(auth.user.id, assignment.courseId)) {
+        return sendJson(res, 403, {
+          ok: false,
+          error: `权限不足：学生「${auth.user.id}」未选修课程「${assignment.courseId}」，禁止提交报告`
+        });
+      }
+      // 学生只能向已发布作业提交（store.getAssignment(id, userId) 对学生过滤未发布）
+      if (!store.getAssignment(assignmentId, auth.user.id)) {
+        return sendJson(res, 403, {
+          ok: false,
+          error: `权限不足：作业「${assignmentId}」尚未发布，学生不可提交报告`
+        });
+      }
+
+      // 扩展名白名单 / 20MB 上限 / SHA-256 去重均在此校验，失败 → 400
+      let savedFile;
+      try {
+        savedFile = await storage.saveFile(fileBuffer, fileName);
+      } catch (err) {
+        return sendJson(res, 400, { ok: false, error: err.message });
+      }
+
+      const submissionId = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      try {
+        store.createSubmission({
+          id: submissionId,
+          assignmentId,
+          studentId: auth.user.id,
+          fileName: savedFile.originalName,
+          submittedAt: new Date().toISOString(),
+          status: "submitted",
+          blobId: savedFile.fileId,
+          grades: [],
+          summary: "",
+          history: []
+        });
+      } catch (err) {
+        return sendJson(res, 400, { ok: false, error: err.message });
+      }
+
+      // 回读时同样走权限层（纵深防御）：新建记录 status=submitted，
+      // 即使是本人查询，grades/summary 也必须是置空后的契约值。
+      const submission = store.getSubmission(submissionId, auth.user.id);
+      return sendJson(res, 200, {
+        ok: true,
+        submission,
+        file: {
+          id: savedFile.fileId,
+          name: savedFile.originalName,
+          size: savedFile.size,
+          sizeFormatted: savedFile.sizeFormatted,
+          hash: savedFile.hash,
+          viewUrl: `/api/learnbuddy/files/${savedFile.fileId}/view`,
+          downloadUrl: `/api/learnbuddy/files/${savedFile.fileId}/download`
+        }
+      });
+    }
+
     if (next) next();
   });
 }
