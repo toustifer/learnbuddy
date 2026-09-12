@@ -1000,6 +1000,38 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
       });
     }
 
+    // 9.2 作业列表：学生仅见已发布作业；教师见本课程全部作业
+    //     courseId 可选；传入时先做「课程存在 + 有访问权」判定，
+    //     避免跨课程查询静默返回空数组（前端无法区分「无权限」与「确实没作业」）。
+    if (req.method === "GET" && pathname === "/api/learnbuddy/assignments") {
+      const auth = requireUser(url.searchParams.get("userId"));
+      if (!auth.ok) {
+        return sendJson(res, auth.status, { ok: false, error: auth.error });
+      }
+
+      const courseId = url.searchParams.get("courseId");
+      if (courseId) {
+        if (!store.getCourse(courseId)) {
+          return sendJson(res, 404, { ok: false, error: `课程不存在: ${courseId}` });
+        }
+        if (!store.hasCourse(auth.user.id, courseId)) {
+          return sendJson(res, 403, {
+            ok: false,
+            error: `权限不足：用户「${auth.user.id}」无权访问课程「${courseId}」的作业`
+          });
+        }
+      }
+
+      const assignments = store.getAssignments(auth.user.id, courseId);
+      return sendJson(res, 200, {
+        ok: true,
+        userId: auth.user.id,
+        courseId: courseId || null,
+        count: assignments.length,
+        assignments
+      });
+    }
+
     if (next) next();
   });
 }

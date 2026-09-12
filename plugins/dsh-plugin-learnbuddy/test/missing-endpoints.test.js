@@ -186,3 +186,100 @@ test("缺失端点 - GET /courses：用户不存在返回 404", async () => {
     await t.close();
   }
 });
+
+// ==========================================
+// 2. GET /assignments
+// ==========================================
+
+test("缺失端点 - GET /assignments：userId 必填；跨课程 403；课程不存在 404", async () => {
+  const t = await startTestServer();
+  try {
+    // 1) 缺 userId → 400
+    const noUser = await t.get(`${BASE}/assignments?courseId=network`);
+    assert.equal(noUser.statusCode, 400);
+    assert.equal(noUser.json.ok, false);
+    assert.ok(noUser.json.error.includes("userId"));
+
+    // 2) 用户不存在 → 404
+    const ghost = await t.get(`${BASE}/assignments?userId=s-nobody&courseId=network`);
+    assert.equal(ghost.statusCode, 404);
+
+    // 3) 课程不存在 → 404（与权限不足区分）
+    const noCourse = await t.get(`${BASE}/assignments?userId=s-yi&courseId=nope`);
+    assert.equal(noCourse.statusCode, 404);
+    assert.ok(noCourse.json.error.includes("课程不存在"));
+
+    // 4) 跨课程：s-yi 未选修 database → 403（不是静默空数组）
+    const crossCourse = await t.get(`${BASE}/assignments?userId=s-yi&courseId=database`);
+    assert.equal(crossCourse.statusCode, 403);
+    assert.equal(crossCourse.json.ok, false);
+    assert.ok(crossCourse.json.error.includes("权限不足"), crossCourse.json.error);
+    assert.equal(crossCourse.json.assignments, undefined);
+  } finally {
+    await t.close();
+  }
+});
+
+test("缺失端点 - GET /assignments：本课程可见性 + 学生看不到未发布作业", async () => {
+  const t = await startTestServer();
+  try {
+    // 播种一条**未发布**草稿作业，用于验证师生可见性差异
+    t.store.createAssignment({
+      id: "lab-tcp-draft",
+      courseId: "network",
+      title: "实验二 · 未发布草稿",
+      due: "2026-10-01",
+      description: "尚未发布，学生不应看到",
+      materialIds: [],
+      rubric: [],
+      confirmed: false,
+      published: false
+    });
+
+    const ids = (json) => json.assignments.map((a) => a.id).sort();
+
+    // 学生 s-yi 看 network：只有已发布的 lab-tcp
+    const studentRes = await t.get(`${BASE}/assignments?userId=s-yi&courseId=network`);
+    assert.equal(studentRes.statusCode, 200);
+    assert.equal(studentRes.json.ok, true);
+    assert.deepEqual(ids(studentRes.json), ["lab-tcp"]);
+    assert.ok(
+      !studentRes.json.assignments.some((a) => a.id === "lab-tcp-draft"),
+      "未发布作业不得泄漏给学生"
+    );
+
+    // 教师 t-chen 看 network：含草稿
+    const teacherRes = await t.get(`${BASE}/assignments?userId=t-chen&courseId=network`);
+    assert.equal(teacherRes.statusCode, 200);
+    assert.deepEqual(ids(teacherRes.json), ["lab-tcp", "lab-tcp-draft"]);
+
+    // 其它课程：s-zhou 在 database → lab-db
+    const dbRes = await t.get(`${BASE}/assignments?userId=s-zhou&courseId=database`);
+    assert.deepEqual(ids(dbRes.json), ["lab-db"]);
+
+    // 不传 courseId：返回该用户全部可访问课程的作业
+    //   s-yi 已选 network / os / cs101 → lab-tcp + lab-os（cs101 无作业）
+    const allRes = await t.get(`${BASE}/assignments?userId=s-yi`);
+    assert.equal(allRes.json.courseId, null);
+    assert.deepEqual(ids(allRes.json), ["lab-os", "lab-tcp"]);
+
+    // 作业字段契约（store.mapAssignment 映射）
+    const labTcp = studentRes.json.assignments[0];
+    assert.deepEqual(Object.keys(labTcp).sort(), [
+      "confirmed",
+      "courseId",
+      "description",
+      "due",
+      "id",
+      "materialIds",
+      "published",
+      "rubric",
+      "title"
+    ]);
+    assert.equal(labTcp.courseId, "network");
+    assert.equal(labTcp.published, true);
+    assert.equal(labTcp.rubric.length, 4);
+  } finally {
+    await t.close();
+  }
+});
