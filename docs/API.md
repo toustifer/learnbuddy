@@ -1,17 +1,25 @@
 # LearnBuddy 后端接口文档（面向前端联调）
 
-> **本文覆盖 18 个业务端点**（另含 1 个 CORS 预检处理器 `OPTIONS /api/learnbuddy/*`）。
-> 端点真源：`plugins/dsh-plugin-learnbuddy/src/routes/api.js`（版本 `cf0220f`）。
-> 所有响应示例均来自**对运行中服务的实测**；凡未实测者均已显式标注 ⚠️。
+> **本文覆盖 23 个业务端点**（另含 1 个 CORS 预检处理器 `OPTIONS /api/learnbuddy/*`）。
+> 其中 **18 个为 task-16 实测版本**，**5 个为 task-17 补齐的课程/作业/提交域端点**（⑲–㉓，见 [§3.7](#37-课程--作业--提交域task-17-新增)）。
+> 端点真源：`plugins/dsh-plugin-learnbuddy/src/routes/api.js`（版本 `cf0220f` + task-17 增量）。
+> 所有响应示例均来自**实测**；task-16 的 18 个端点实测于公网服务，task-17 新增的 5 个端点实测于本仓 `test/missing-endpoints.test.js` 的真实运行（本地 in-memory SQLite + 种子数据，与生产同一套路由代码）。
 
 | 项目 | 值 |
 | --- | --- |
 | 服务地址 | `http://129.204.52.57:3088` |
 | 业务路由前缀 | `/api/learnbuddy` |
 | 前端静态入口 | `http://129.204.52.57:3088/learnbuddy/` |
-| 实测时间 | 2026-09-11 18:04–18:08 (UTC) |
-| 实测方式 | `curl.exe` 直连公网地址，逐端点取证 |
-| 代码版本 | `cf0220f` (branch `feat/api-docs`) |
+| 实测时间 | 2026-09-11 18:04–18:08 (UTC)；task-17 5 个端点：2026-09-12 本地实测 |
+| 实测方式 | `curl.exe` 直连公网地址（task-16）；`node --test` 真实 HTTP 链路（task-17） |
+| 代码版本 | `cf0220f` (branch `feat/api-docs`) + task-17 `feat/missing-endpoints` |
+
+> 🆕 **task-17 增量（2026-09-12）**：补齐 5 个 P0 端点 —— `GET /courses`、`GET /assignments`、
+> `GET /submissions`、`GET /submissions/:id`、`POST /submissions`。
+> 它们修复了两个阻塞项：① 前端拿不到课程/作业/提交列表，评阅主线无法从 UI 走通；
+> ② 🔴 「未发布报告的 `grades` / `summary` 对学生置空」这条安全红线此前**无端点可达**（`store.getSubmissions()` 已实现但无路由调用），现已通过 ㉑/㉒ 真正生效。
+> **本域 5 个端点 `userId` 一律必填（缺失 400）**，不会重蹈 `GET /materials` 无参返回全库（含 `private`）的越权覆辙。
+> 无 schema 变更 —— 服务器部署只需重启（无需数据迁移）。
 
 ---
 
@@ -39,6 +47,7 @@
   - [3.4 伴学答疑域](#34-伴学答疑域)
   - [3.5 评阅域（AutoGrader）](#35-评阅域autograder)
   - [3.6 学情分析域](#36-学情分析域)
+  - [3.7 课程 / 作业 / 提交域（task-17 新增）](#37-课程--作业--提交域task-17-新增)
 - [4. 权限与业务规则（评分点）](#4-权限与业务规则评分点)
 - [5. 评阅状态机](#5-评阅状态机)
 - [6. 前端接入建议](#6-前端接入建议)
@@ -86,6 +95,16 @@ curl.exe -s "$BASE/materials/mat-net-teach/context?userId=s-yi"   # 私有课件
 # ── 文件预览与下载 ────────────────────────────────────
 curl.exe -s -I "$BASE/files/<blobId>/view"
 curl.exe -s -I "$BASE/files/<blobId>/download"
+
+# ── 课程 / 作业 / 提交（task-17 新增，⚠️ userId 必填）──────
+curl.exe -s "$BASE/courses?userId=s-yi"                            # 学生：已选课程
+curl.exe -s "$BASE/courses?userId=t-chen"                          # 教师：所授课程
+curl.exe -s "$BASE/assignments?userId=s-yi&courseId=network"       # 作业列表（学生仅见已发布）
+curl.exe -s "$BASE/submissions?userId=s-xu&assignmentId=lab-os"    # 提交列表（学生：成绩置空）
+curl.exe -s "$BASE/submissions?userId=t-chen&assignmentId=lab-os"  # 提交列表（教师：完整成绩）
+curl.exe -s "$BASE/submissions/sub-xu-os?userId=t-chen"            # 单份提交详情
+curl.exe -s -X POST "$BASE/submissions" -H "$JSON" \
+  -d '{"studentId":"s-yi","assignmentId":"lab-tcp","fileName":"报告.pdf","encoding":"base64","content":"JVBERi0xLjQKJUVPRgo="}'
 
 # ── 伴学答疑 ──────────────────────────────────────────
 curl.exe -s -X POST "$BASE/qa/cards/search" -H "$JSON" \
@@ -193,8 +212,8 @@ Access-Control-Allow-Headers: Content-Type, Authorization, X-File-Name
 | `204` | CORS 预检成功 |
 | `400` | 缺少必填参数、参数类型错误、文件格式/大小不合法、状态机不允许、评分项缺项 |
 | `401` | **仅** `POST /auth/login` 用户名+密码都不匹配兜底账号时 |
-| `403` | 复核发布时角色/课程权限不足（仅 `review-publish` 使用） |
-| `404` | 资源不存在，或存在但当前用户无权访问（课件上下文、提交记录） |
+| `403` | 角色/课程权限不足：`review-publish`（非教师、非执教教师）、**`GET /assignments` / `GET /submissions` / `GET /submissions/:id` / `POST /submissions`（跨课程、非学生提交、未发布作业提交、看他人提交）** |
+| `404` | 资源不存在，或存在但当前用户无权访问（课件上下文）；**新增：用户/课程/作业/提交记录不存在** |
 | `500` | 文件读流异常（`files/:id/view|download`） |
 | `502` | 网关层：DSH 上游未启动（非业务端点） |
 
@@ -1322,6 +1341,484 @@ curl.exe -s -X POST ".../grader/batch" -H "Content-Type: application/json" \
 
 ---
 
+### 3.7 课程 / 作业 / 提交域（task-17 新增）
+
+> 🆕 本节 5 个端点为 **task-17 补齐**，修复「前端拿不到课程/作业/提交列表 → 评阅主线无法从 UI 走通」
+> 与「未发布成绩对学生置空的安全红线在 API 层不可达」两个阻塞项。
+>
+> **通用规则（本域 5 个端点一致，无例外）**
+>
+> | 规则 | 行为 |
+> | --- | --- |
+> | `userId` / `studentId` **必填** | 缺失 → `400 {"ok":false,"error":"缺少必要参数: userId"}`。**绝不会**像 `GET /materials` 那样无身份即返回全量数据 |
+> | 用户不存在 | `404 {"ok":false,"error":"用户不存在: <id>"}` |
+> | 无课程访问权（跨课程） | `403 {"ok":false,"error":"权限不足：…"}` |
+> | 资源不存在 | `404 {"ok":false,"error":"课程/作业/提交记录不存在: <id>"}` |
+> | 数据入口 | 全部经 `DatabaseStore` 权限层产出，端点自身不做任何绕过权限的字段拼装 |
+
+#### ⑲ `GET /api/learnbuddy/courses` — 课程列表
+
+**用途**：拉取当前用户可访问的课程（学生 = 已选课程；教师 = 所授课程）。前端可用它替代硬编码的课程下拉框。
+
+**Query 参数**
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `userId` | string | **是** | 用户 ID（`users.id`，如 `s-yi` / `t-chen`）。缺失 → `400` |
+
+**实测响应（学生 `s-yi`，HTTP 200）**
+
+```json
+{
+  "ok": true,
+  "userId": "s-yi",
+  "role": "student",
+  "count": 3,
+  "courses": [
+    { "id": "cs101", "teacherId": "t-chen", "title": "计算机科学导论", "code": "CS 101", "color": "blue", "description": "计算机系统与算法基础初探。" },
+    { "id": "network", "teacherId": "t-chen", "title": "计算机网络", "code": "CS 203", "color": "green", "description": "从一次握手，理解万物互联。" },
+    { "id": "os", "teacherId": "t-chen", "title": "操作系统", "code": "CS 301", "color": "orange", "description": "探索计算机如何管理每一份资源。" }
+  ]
+}
+```
+
+**响应字段说明**
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `role` | string | 请求者的角色（`student` / `teacher`），前端可直接据此切换 UI |
+| `count` | number | 课程条数 |
+| `courses[].id` | string | 课程 ID（后续 `courseId` 参数用它） |
+| `courses[].teacherId` | string | 执教教师 userId |
+| `courses[].title` / `code` / `color` / `description` | string | 课程展示信息 |
+| 排序 | — | 固定按 `code` 升序（`CS 101` → `CS 203` → `CS 301`） |
+
+**实测（失败）**
+
+```json
+// GET /courses            （缺 userId）→ HTTP 400
+{ "ok": false, "error": "缺少必要参数: userId" }
+
+// GET /courses?userId=s-nobody → HTTP 404
+{ "ok": false, "error": "用户不存在: s-nobody" }
+```
+
+| 状态码 | 场景 |
+| --- | --- |
+| `200` | 成功（用户无任何课程时为 `count: 0` + `courses: []`，仍返回 200） |
+| `400` | 缺 `userId` |
+| `404` | `userId` 在 `users` 表中不存在 |
+
+---
+
+#### ⑳ `GET /api/learnbuddy/assignments` — 作业列表
+
+**用途**：拉取作业列表。学生**只能看到已发布（`published: true`）**的作业；教师能看到本课程全部作业（含未发布草稿）。
+
+**Query 参数**
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `userId` | string | **是** | 缺失 → `400` |
+| `courseId` | string | 否 | 传入则限定该课程；**会先校验课程存在与访问权**，跨课程 → `403`（不是静默返回空数组）。不传则返回该用户全部可访问课程的作业 |
+
+**实测响应（学生 `s-yi` + `courseId=network`，HTTP 200）**
+
+```json
+{
+  "ok": true,
+  "userId": "s-yi",
+  "courseId": "network",
+  "count": 1,
+  "assignments": [
+    {
+      "id": "lab-tcp",
+      "courseId": "network",
+      "title": "实验一 · TCP 三次握手分析",
+      "due": "2026-09-18",
+      "description": "使用 Wireshark 捕获一次完整的 TCP 连接建立过程，分析 SYN、ACK 与序列号变化，结合截图给出解释，并讨论一种连接异常。",
+      "materialIds": ["mat-tcp", "mat-wire"],
+      "rubric": [
+        { "id": "network-r0", "title": "实验环境与抓包过程", "max": 20, "criterion": "清楚说明环境、操作步骤与关键参数，过程可复现。" },
+        { "id": "network-r1", "title": "三次握手字段分析", "max": 30, "criterion": "结合本次实验的原理与关键字段，逐项解释观察结果。" },
+        { "id": "network-r2", "title": "抓包截图与证据", "max": 30, "criterion": "提供清晰、对应当前结论的原始截图或输出，并标注必要字段。" },
+        { "id": "network-r3", "title": "异常分析与实验总结", "max": 20, "criterion": "讨论异常或边界情况，给出有依据的结论与改进方向。" }
+      ],
+      "confirmed": true,
+      "published": true
+    }
+  ]
+}
+```
+
+**响应字段说明**
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `assignments[].id` | string | 作业 ID（提交/评阅/学情接口都用它） |
+| `assignments[].courseId` | string | 所属课程 |
+| `assignments[].due` | string | 截止日期（`YYYY-MM-DD`，可能为空串） |
+| `assignments[].materialIds` | string[] | 关联课件 ID，供前端跳转课件 |
+| `assignments[].rubric` | object[] | 评分标准 `{id,title,max,criterion}`，**教师复核与前端分数明细都用它对齐** |
+| `assignments[].confirmed` | boolean | 评分标准是否已确认（`false` 时 `review-publish` 会 400） |
+| `assignments[].published` | boolean | 是否已发布。**学生的列表里只会出现 `true`** |
+
+**实测（失败）**
+
+```json
+// GET /assignments?userId=s-yi&courseId=database   （s-yi 未选修 database）→ HTTP 403
+{ "ok": false, "error": "权限不足：用户「s-yi」无权访问课程「database」的作业" }
+
+// GET /assignments?userId=s-yi&courseId=nope       → HTTP 404
+{ "ok": false, "error": "课程不存在: nope" }
+
+// GET /assignments?courseId=network                （缺 userId）→ HTTP 400
+{ "ok": false, "error": "缺少必要参数: userId" }
+```
+
+| 状态码 | 场景 |
+| --- | --- |
+| `200` | 成功（无匹配作业时 `count: 0`） |
+| `400` | 缺 `userId` |
+| `403` | 传了 `courseId` 但当前用户无该课程访问权 |
+| `404` | 用户不存在 / 传入的 `courseId` 不存在 |
+
+---
+
+#### ㉑ `GET /api/learnbuddy/submissions` — 提交列表 ★ 安全红线生效点
+
+**用途**：拉取某次作业的提交列表。**教师看全班（完整评分与评语）；学生只看自己的，且非 `published` 状态的报告 `grades` / `summary` 被强制置空。**
+
+> 🔴 **本节是本任务最重要的验收点。** 服务端经由 `store.getSubmissions(userId, assignmentId)` 产出数据，
+> 「未发布成绩不泄漏给学生」这条赛题红线**首次在 HTTP 层真正生效**。
+
+**Query 参数**
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `userId` | string | **是** | 缺失 → `400` |
+| `assignmentId` | string | **是** | 缺失 → `400`；不存在 → `404` |
+
+**实测响应 A（学生 `s-xu` 查 `lab-os`：自己的报告处于 `review`，成绩被置空，HTTP 200）**
+
+```json
+{
+  "ok": true,
+  "userId": "s-xu",
+  "role": "student",
+  "assignmentId": "lab-os",
+  "courseId": "os",
+  "count": 1,
+  "submissions": [
+    {
+      "id": "sub-xu-os",
+      "assignmentId": "lab-os",
+      "studentId": "s-xu",
+      "fileName": "进程同步实验报告_许然.docx",
+      "submittedAt": "2026-09-10 08:45",
+      "status": "review",
+      "sampleKey": "os",
+      "grades": [],
+      "summary": "",
+      "history": []
+    }
+  ]
+}
+```
+
+> ⚠️ 注意：库里这条记录**实际带着 4 项评分与一段评语**（评阅已完成、教师尚未发布），
+> 但学生侧响应中 `grades` 为 `[]`、`summary` 为 `""`，且**响应里根本没有 `failure` 键**（未下发给学生）。
+> `count: 1` 也证明学生只看到自己的提交。
+
+**实测响应 B（教师 `t-chen` 查**同一份** `sub-xu-os`：完整评分，HTTP 200）**
+
+```json
+{
+  "ok": true,
+  "userId": "t-chen",
+  "role": "teacher",
+  "assignmentId": "lab-os",
+  "courseId": "os",
+  "count": 2,
+  "submissions": [
+    {
+      "id": "sub-xu-os",
+      "assignmentId": "lab-os",
+      "studentId": "s-xu",
+      "fileName": "进程同步实验报告_许然.docx",
+      "submittedAt": "2026-09-10 08:45",
+      "status": "review",
+      "sampleKey": "os",
+      "grades": [
+        { "rubricId": "os-r0", "score": 19, "page": 1, "comment": "环境与实现步骤清晰。", "evidence": "使用有界缓冲区与信号量实现生产者、消费者线程。" },
+        { "rubricId": "os-r1", "score": 24, "page": 2, "comment": "互斥锁保护临界区描述清楚，信号量增减顺序可再推导。", "evidence": "运行日志展示缓冲区容量在 0 至 5 之间变化。" },
+        { "rubricId": "os-r2", "score": 25, "page": 2, "comment": "测试输出截图完整。", "evidence": "运行日志展示缓冲区容量在 0 至 5 之间变化。" },
+        { "rubricId": "os-r3", "score": 16, "page": 3, "comment": "边界条件讨论有待深化。", "evidence": "对空缓冲区的连续消费测试说明不充分。" }
+      ],
+      "summary": "核心过程已完成，边界测试与证据标注尚需完善。",
+      "history": [],
+      "failure": null
+    },
+    { "id": "sub-yi-os", "studentId": "s-yi", "status": "published", "grades": ["… 4 项，学生侧同样可见"], "summary": "能够清楚说明同步与互斥的区别。…" }
+  ]
+}
+```
+
+**师生可见性对照表（同一份 `sub-xu-os`，同一时刻）**
+
+| 字段 | 学生 `s-xu` 视角 | 教师 `t-chen` 视角 |
+| --- | --- | --- |
+| `grades` | `[]` 🔴 | 4 项完整评分 ✅ |
+| `summary` | `""` 🔴 | 完整评语 ✅ |
+| `failure` | 键不存在 🔴 | `null`（失败时带原因）✅ |
+| 可见提交条数 | 仅自己的（`count: 1`） | 全班（`count: 2`） |
+| 元信息（`status` / `fileName` / `submittedAt`） | 可见（用于展示「评阅中」状态） | 可见 |
+
+**各状态下的学生可见性**（与 [§5 状态机](#5-评阅状态机)一致）
+
+| `status` | 学生 `grades` / `summary` |
+| --- | --- |
+| `submitted` | 置空 |
+| `grading` | 置空 |
+| `review` | 置空 |
+| `failed` | 置空 |
+| `published` | **完整可见** |
+
+**响应字段说明**
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `role` | string | 请求者角色 |
+| `assignmentId` / `courseId` | string | 回显，便于前端串联 |
+| `count` | number | 本视角下的可见条数 |
+| `submissions[].id` | string | 提交 ID（`submissions/:id`、`grader/*` 都用它） |
+| `submissions[].studentId` | string | 提交者 userId |
+| `submissions[].status` | string | `submitted` / `grading` / `review` / `published` / `failed` |
+| `submissions[].grades` | object[] | `{rubricId,score,page,comment,evidence}`；非 `published` 时对学生为 `[]` |
+| `submissions[].summary` | string | 总评；非 `published` 时对学生为 `""` |
+| `submissions[].history` | object[] | 历次发布快照（教师视角有意义；学生置空报告为空数组） |
+| `submissions[].blobId` | string \| 缺省 | 报告原件 ID（有物理文件时才会出现） |
+
+**实测（失败）**
+
+```json
+// 缺 userId          → HTTP 400
+{ "ok": false, "error": "缺少必要参数: userId" }
+// 缺 assignmentId    → HTTP 400
+{ "ok": false, "error": "缺少必要参数: assignmentId" }
+// assignmentId 不存在 → HTTP 404
+{ "ok": false, "error": "作业不存在: lab-nope" }
+// 跨课程（t-chen 查 database 课的 lab-db）→ HTTP 403
+{ "ok": false, "error": "权限不足：用户「t-chen」无权访问课程「database」的提交记录" }
+```
+
+| 状态码 | 场景 |
+| --- | --- |
+| `200` | 成功（自己无提交时 `count: 0`） |
+| `400` | 缺 `userId` 或 `assignmentId` |
+| `403` | 用户对该作业所属课程无访问权 |
+| `404` | 用户不存在 / 作业不存在 |
+
+---
+
+#### ㉒ `GET /api/learnbuddy/submissions/:id` — 单份提交详情
+
+**用途**：拉取单份提交详情（与 ㉑ 同一套置空规则）。前端展示「我的报告 / 某学生报告」详情页用它。
+
+**Path / Query 参数**
+
+| 字段 | 位置 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | **是** | 提交 ID，如 `sub-xu-os` |
+| `userId` | query | string | **是** | 缺失 → `400` |
+
+**实测响应 A（学生 `s-xu` 查自己的 `review` 报告，HTTP 200）**
+
+```json
+{
+  "ok": true,
+  "submission": {
+    "id": "sub-xu-os",
+    "assignmentId": "lab-os",
+    "studentId": "s-xu",
+    "fileName": "进程同步实验报告_许然.docx",
+    "submittedAt": "2026-09-10 08:45",
+    "status": "review",
+    "sampleKey": "os",
+    "grades": [],
+    "summary": "",
+    "history": []
+  }
+}
+```
+
+**实测响应 B（教师 `t-chen` 查同一份，HTTP 200）**
+
+```json
+{
+  "ok": true,
+  "submission": {
+    "id": "sub-xu-os",
+    "studentId": "s-xu",
+    "status": "review",
+    "grades": [ { "rubricId": "os-r0", "score": 19, "page": 1, "comment": "环境与实现步骤清晰。", "evidence": "…" } ],
+    "summary": "核心过程已完成，边界测试与证据标注尚需完善。",
+    "failure": null
+  }
+}
+```
+
+> 上面 B 为节选（完整 `grades` 共 4 项，字段与 ㉑ 一致）。
+
+**实测（失败）**
+
+```json
+// GET /submissions/sub-xu-os?userId=s-zhou  （学生看他人提交）→ HTTP 403
+{ "ok": false, "error": "权限不足：用户「s-zhou」无权访问提交记录「sub-xu-os」" }
+
+// GET /submissions/sub-nope?userId=t-chen   → HTTP 404
+{ "ok": false, "error": "提交记录不存在: sub-nope" }
+
+// GET /submissions/sub-xu-os                （缺 userId）→ HTTP 400
+{ "ok": false, "error": "缺少必要参数: userId" }
+```
+
+| 状态码 | 场景 |
+| --- | --- |
+| `200` | 有权限（学生看自己的已发布报告 / 教师看本课程任意报告） |
+| `400` | 缺 `userId` |
+| `403` | 记录存在但无权访问（学生看他人、教师看非本人执教课程） |
+| `404` | 用户不存在 / 提交记录不存在 |
+
+---
+
+#### ㉓ `POST /api/learnbuddy/submissions` — 创建提交（学生交报告）
+
+**用途**：学生提交实验报告，写入 `submissions` 表，初始 `status: "submitted"`，可立即被
+`POST /grader/grade-submission`（单份）或 `POST /grader/batch`（全班）评阅。
+
+**请求体（两种形态任选，推荐 JSON）**
+
+**a) `application/json`**
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `assignmentId` | string | **是** | 目标作业 ID |
+| `studentId` | string | **是** | 提交者 userId（学生）。兼容别名 `userId` |
+| `fileName` | string | **是** | 报告文件名，**扩展名决定存储校验**（白名单：`.pdf .ppt .pptx .docx .png .jpg .jpeg`） |
+| `content` | string | **是** | 报告文件内容：base64 字符串或 `data:application/pdf;base64,...`。兼容别名 `fileData` / `buffer` |
+| `encoding` | string | 否 | 传 `"base64"` 表示按 base64 解码；`content` 以 `data:` 开头时自动按 base64 处理，无需该字段 |
+
+**b) `multipart/form-data`**
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `assignmentId` | text | **是** | 同上 |
+| `studentId` | text | **是** | 同上 |
+| 文件字段（如 `file`） | file | **是** | 报告二进制，文件名即 `fileName` |
+
+**请求示例（JSON，base64）**
+
+```bash
+curl.exe -s -X POST "$BASE/submissions" -H "Content-Type: application/json" \
+  -d '{"studentId":"s-yi","assignmentId":"lab-tcp","fileName":"TCP实验报告_林一.pdf","encoding":"base64","content":"JVBERi0xLjQK...JUVPRgo="}'
+```
+
+**实测响应（成功，HTTP 200）**
+
+```json
+{
+  "ok": true,
+  "submission": {
+    "id": "sub-1789177259360-xrly",
+    "assignmentId": "lab-tcp",
+    "studentId": "s-yi",
+    "fileName": "TCP实验报告_林一.pdf",
+    "submittedAt": "2026-09-12T01:40:59.360Z",
+    "status": "submitted",
+    "blobId": "6b110e101cddca23772cb3edfff1c713afc50a89f285eae27c6b3f5a47ed9129.pdf",
+    "grades": [],
+    "summary": "",
+    "history": []
+  },
+  "file": {
+    "id": "6b110e101cddca23772cb3edfff1c713afc50a89f285eae27c6b3f5a47ed9129.pdf",
+    "name": "TCP实验报告_林一.pdf",
+    "size": 41,
+    "sizeFormatted": "41 B",
+    "hash": "6b110e101cddca23772cb3edfff1c713afc50a89f285eae27c6b3f5a47ed9129",
+    "viewUrl": "/api/learnbuddy/files/6b110e101cddca23772cb3edfff1c713afc50a89f285eae27c6b3f5a47ed9129.pdf/view",
+    "downloadUrl": "/api/learnbuddy/files/6b110e101cddca23772cb3edfff1c713afc50a89f285eae27c6b3f5a47ed9129.pdf/download"
+  }
+}
+```
+
+**响应字段说明**
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `submission.id` | string | 新提交 ID，交给 `POST /grader/grade-submission` 评阅 |
+| `submission.status` | string | 固定初始值 `"submitted"` |
+| `submission.blobId` | string | 落盘文件 ID = `SHA-256 + 扩展名`（64 位十六进制）。**报告正文不落库，数据库只存这个引用** |
+| `submission.grades` / `summary` | `[]` / `""` | 新建时为初始值（且按红线规则，未发布状态对学生恒为置空） |
+| `file.viewUrl` / `file.downloadUrl` | string | 可直接给前端做预览/下载（走 ⑤/⑥ 两个端点） |
+| `file.size` / `sizeFormatted` | number / string | 字节数与可读大小 |
+
+**实测（失败）**
+
+```json
+// 缺 studentId   → HTTP 400
+{ "ok": false, "error": "缺少必要参数: studentId" }
+// 缺 assignmentId → HTTP 400
+{ "ok": false, "error": "缺少必要参数: assignmentId" }
+// 缺 fileName     → HTTP 400
+{ "ok": false, "error": "缺少必要参数: fileName" }
+// 缺 content      → HTTP 400
+{ "ok": false, "error": "缺少必要参数: content（报告文件内容，base64 或 data URL；multipart 时为文件字段）" }
+// 非学生角色提交 → HTTP 403
+{ "ok": false, "error": "权限不足：用户「t-chen」非学生角色，禁止提交报告" }
+// 跨课程提交     → HTTP 403
+{ "ok": false, "error": "权限不足：学生「s-yi」未选修课程「database」，禁止提交报告" }
+// 作业未发布     → HTTP 403
+{ "ok": false, "error": "权限不足：作业「lab-tcp-draft」尚未发布，学生不可提交报告" }
+// 非白名单扩展名 → HTTP 400
+{ "ok": false, "error": "不支持的文件格式: \".exe\"。仅支持白名单格式: .pdf, .ppt, .pptx, .docx, .png, .jpg, .jpeg" }
+```
+
+| 状态码 | 场景 |
+| --- | --- |
+| `200` | 提交成功 |
+| `400` | 缺 `studentId`/`assignmentId`/`fileName`/`content`；扩展名不在白名单；文件超过 20MB |
+| `403` | 非学生角色；未选修该课程；作业尚未发布 |
+| `404` | 用户不存在；作业不存在 |
+
+**安全与存储约束（重要）**
+
+1. **只允许学生提交**：`studentId` 必须是 `role === "student"` 的用户，否则 `403`。
+2. **只能提交到自己已选修的、且已发布的作业**，否则 `403`（跨课程 / 草稿作业都拦下）。
+3. **报告文件一律经 `StorageService` 物理落盘**，数据库只保存 `blobId`（SHA-256 文件名）。
+   *大 base64 绝不写入 `submissions` 表* —— 已由测试断言：数据库行内既不含 base64，也不含报告正文，
+   且单行记录远小于上传载荷（`test/missing-endpoints.test.js`）。
+4. **同一文件内容重复提交会哈希去重**（物理盘只存一份），但每次提交仍生成独立的 `submission.id` 记录。
+5. 不要给本端点传入真实大模型密钥之类的东西 —— 它只做落盘与入库，**不触发任何模型调用**。
+
+**推荐前端调用链**
+
+```
+GET /courses?userId=<uid>                       → 课程下拉框
+        ↓
+GET /assignments?userId=<uid>&courseId=<cid>    → 作业列表（含 rubric，用于展示评分标准）
+        ↓
+POST /submissions  {studentId, assignmentId, fileName, content}   → 交报告（status=submitted）
+        ↓
+POST /grader/grade-submission {submissionId}    → 教师侧触发评阅（submitted → review）
+        ↓
+GET /submissions?userId=<studentId>&assignmentId=<aid>  → 学生看自己的（未发布 → 成绩置空）
+GET /submissions?userId=<teacherId>&assignmentId=<aid>  → 教师看全班（完整成绩）
+```
+
+---
+
 ## 4. 权限与业务规则（评分点）
 
 > 这些规则是赛题评分点，**前端必须据此设计 UI**（隐藏/置空/提示），不能只依赖后端拦截。
@@ -1338,10 +1835,12 @@ curl.exe -s -X POST ".../grader/batch" -H "Content-Type: application/json" \
 
 教师查询**不受此限制**（教师始终能看到全班完整评分与评语）。
 
-> 🚨 **重要缺口**：该权限层由 `store.getSubmission()` / `store.getSubmissions()` 实现，但
-> **当前 HTTP API 没有任何端点调用它们**（已 grep 确认：`api.js` 仅调用 `getUserByUsername`）。
-> 也就是说 **前端目前无法通过 HTTP 拉取提交列表或单份提交详情**，这条「置空红线」在当前 API 面上不可达。
-> 详见[第 7 节](#7-实测记录与代码不符之处)与[第 8 节](#8-前端接入建议)。
+> ✅ **task-17 更新（已闭合）**：该权限层由 `store.getSubmission()` / `store.getSubmissions()` 实现，
+> 此前 **HTTP API 没有任何端点调用它们**（红线在 API 面不可达）。
+> 现由 **㉑ `GET /submissions?assignmentId=&userId=`** 与 **㉒ `GET /submissions/:id?userId=`** 接通，
+> 红线**在 HTTP 层真正生效**，并有端到端测试证明：
+> 学生查 `review` 态报告 → `grades: []` / `summary: ""`（且无 `failure` 键）；
+> 教师查**同一份** → 4 项完整 `grades` + 完整 `summary`（见 [§3.7](#37-课程--作业--提交域task-17-新增)）。
 
 ### 4.2 教师只能复核自己所授课程的报告
 
@@ -1480,27 +1979,38 @@ curl.exe -s -X POST ".../grader/batch" -H "Content-Type: application/json" \
 | 11 | 作业学情 | `GET /analytics/assignment/:id?skipLLM=1` | 前端假图表 | 🔴 高 |
 | 12 | 课程大盘 | `GET /analytics/course/:id?skipLLM=1` | 前端假图表 | 🟠 中 |
 | 13 | 课件上传 | `POST /materials/upload` | 无 | 🟡 低 |
+| 14 | **课程下拉框** | **`GET /courses?userId=<uid>`**（task-17 新增） | 前端硬编码 | 🔴 高 |
+| 15 | **作业列表** | **`GET /assignments?userId=<uid>&courseId=<cid>`**（task-17 新增） | 前端硬编码 | 🔴 高 |
+| 16 | **提交报告** | **`POST /submissions`**（task-17 新增） | 无 | 🔴 高 |
+| 17 | **提交/成绩明细** | **`GET /submissions?assignmentId=&userId=`**、**`GET /submissions/:id?userId=`**（task-17 新增） | 无（最大阻塞项，已解除） | 🔴 高 |
 
 ### 6.3 推荐调用顺序
 
 ```
 ① 登录          POST /auth/login                      → 拿 user.id / user.role，存入前端状态
                               ↓
-② 课件与上下文   GET  /materials?userId=<uid>          → 课件列表
+② 课程列表       GET  /courses?userId=<uid>            → 课程下拉框（学生=已选 / 教师=所授）
+                              ↓
+③ 作业列表       GET  /assignments?userId=<uid>&courseId=<cid> → 作业 + rubric（学生仅见已发布）
+                              ↓
+④ 课件与上下文   GET  /materials?userId=<uid>          → 课件列表
                 GET  /materials/:id/context?userId=<uid> → 选中课件的逐页内容与图表
                               ↓
-③ 伴学答疑       POST /qa/ask                          → 命中卡=教师权威答案；否则 agent_llm
+⑤ 伴学答疑       POST /qa/ask                          → 命中卡=教师权威答案；否则 agent_llm
                 POST /dsh/session-context              → 需要把课件注入助手时
                               ↓
-④ 提交报告       （⚠️ 见 6.5：当前无提交端点，需后端补）
+⑥ 提交报告       POST /submissions                     → 落盘 + 入库（status=submitted）
                               ↓
-⑤ 评阅           POST /grader/grade-submission         → submitted → review
+⑦ 评阅           POST /grader/grade-submission         → submitted → review
                 POST /grader/batch?assignmentId=...    → 全班批量
                 POST /grader/retry                     → 仅 failed 可重试
                               ↓
-⑥ 教师复核发布   POST /grader/review-publish           → review → published（需教师身份）
+⑧ 查看提交       GET  /submissions?assignmentId=&userId=<uid>  → 学生：未发布成绩置空；教师：完整
+                GET  /submissions/:id?userId=<uid>     → 单份详情
                               ↓
-⑦ 学情           GET  /analytics/assignment/:id?skipLLM=1
+⑨ 教师复核发布   POST /grader/review-publish           → review → published（需教师身份）
+                              ↓
+⑩ 学情           GET  /analytics/assignment/:id?skipLLM=1
                 GET  /analytics/course/:id?skipLLM=1   → 大盘
 ```
 
@@ -1556,16 +2066,16 @@ async function fetchMaterials(userId, courseId) {
 1. **🚫 不要假设存在 token 鉴权。** 后端当前不校验 token；带上也无副作用，但**不能**用它做前端路由守卫的唯一依据（可直接读 `user.role`）。
 
 2. **⚠️ 课件列表必须带 `userId`。** 否则 `private` 资料会混进列表（实测泄漏，见 §4.3）。
+   *（task-17 新增的 `GET /courses` / `GET /assignments` / `GET /submissions` / `GET /submissions/:id` / `POST /submissions` 已把 `userId` 设为**必填**，缺失直接 `400`，不存在同类泄漏面。）*
 
 3. **⚠️ `status: "pending"` 是正常契约。** 表示解析失败，`knowledge` 必为空数组。UI 应显示「解析失败/待重试」，**不要**当成加载中，也不要显示知识点。
 
 4. **⚠️ AI 结果是降级数据，别当真。** `POST /qa/ask` 检查 `fallback === true`；`POST /grader/submit` 若 `summaryReview` 等于第 7.1 节给出的兜底串，即为假结果。演示时建议明确标注"当前为降级模式"，反而更显诚实。
 
-5. **🚨 当前没有「提交报告」和「查询提交列表」的 HTTP 端点。**
-   - 无法通过 API 创建 submission（`store.createSubmission` 无路由暴露）
-   - 无法通过 API 拉取 submission 列表/详情（`getSubmissions` / `getSubmission` 无路由暴露）
-   - → **前端目前拿不到"某个学生的成绩与评语"**，`sub-yi-os` 这类已发布数据在 HTTP 面上不可读。
-   - → **建议**：要么后端补 `GET /submissions?userId=&assignmentId=` 与 `POST /submissions`，要么前端暂时用 `/analytics/*` 的聚合数字做展示（**不要**自己造明细）。这是本轮联调最大的阻塞项，已上报 Leader。
+5. **✅ 「提交报告」与「查询提交列表」端点已补齐（task-17，2026-09-12）。** *（原文记录：此前无端点暴露 `createSubmission` / `getSubmissions` / `getSubmission`，前端拿不到"某个学生的成绩与评语"，是当时最大的联调阻塞项。）*
+   - 现在可以：`POST /submissions` 交报告 → `GET /submissions?assignmentId=&userId=` 拉列表 → `GET /submissions/:id?userId=` 拉详情。
+   - ⚠️ **记得带 `userId`**（本域必填，缺失 `400`），并且**学生视角下未发布报告的成绩/评语恒为置空**，UI 要显示「评阅中/待发布」而不是空白。
+   - 详见 [§3.7](#37-课程--作业--提交域task-17-新增)。
 
 6. **⚠️ 学情分数字段全为 0 时先看 `publishedCount`。** 只有 `published` 报告才计入均分/分布（见 §3.6）。`publishedCount: 0` → 所有分数必然为 0。
 
@@ -1638,7 +2148,7 @@ node scripts/verify-live-llm.mjs
 | 6 | `POST /qa/cards/search` | — | **检索正常工作**（相关提问 `score: 100`, `count: 1`）；仅「三次握手」等**非关键词**查询返回 0 | 本文 §3.4 说明检索为关键词匹配 |
 | 7 | 未匹配路由 | 预期 JSON 404 | **纯文本** `404 not found`（穿透到 DSH 反向代理） | 本文 §2.3 说明 |
 | 8 | `GET /materials` 可见性 | 应隔离 `private` 资料 | **无 `userId` 时泄漏 `private` 资料** | 本文 §4.3 记录为缺陷 |
-| 9 | 提交/成绩查询端点 | 任务描述"学生查询时成绩被置空" | **该权限逻辑无 HTTP 端点可达**（`getSubmissions` 未被任何路由调用） | 本文 §6.5 列为最大阻塞项 |
+| 9 | 提交/成绩查询端点 | 任务描述"学生查询时成绩被置空" | **task-16 实测时该权限逻辑无 HTTP 端点可达**（`getSubmissions` 未被任何路由调用） | ✅ **task-17 已补齐 ㉑/㉒，红线在 API 层生效**（见 §3.7） |
 | 10 | 学情接口鉴权 | 应限教师 | **无任何鉴权**，无需身份参数 | 本文 §4.4 记录 |
 
 ### 7.3 实测过的端点清单
@@ -1685,16 +2195,39 @@ node scripts/verify-live-llm.mjs
 > 经 `lab-tcp` / `lab-os` 的 `publishedCount`、`reviewedCount` 与 `/materials` 条数在**干扰前后逐项比对**，确认**未产生任何状态变更**。
 > 唯一变动（`mat-1789150155329-b4c6` 新增）来自**其它并发联调者**，非本任务所为。
 
-### 7.4 已知端点缺口（建议后端补齐，本轮未改代码）
+**🆕 task-17 新增 5 个端点的验证记录（5 个，全部真实 HTTP 链路）**
 
-| 缺口 | 影响 |
+| 端点 | 覆盖路径 |
 | --- | --- |
-| 无 `GET /submissions?assignmentId=&userId=` | 前端**无法**拉取提交列表 / 学生成绩明细 |
-| 无 `POST /submissions`（提交报告） | 前端**无法**发起新提交，评阅链路无法从 UI 走通 |
-| 无课程列表端点（`getUserCourses` 无路由） | 前端无法动态拉课程下拉框，只能硬编码 |
-| 无作业列表端点（`getAssignments` 无路由） | 前端无法拉作业列表，只能硬编码 |
-| 无 `DELETE /materials/:id` | 上传后无法删除，联调易留垃圾数据 |
-| 登录不校验密码 | 安全缺口，上生产前必修 |
+| `GET /courses` | 200（学生/教师/另一教师 3 种身份）+ 400（缺 `userId`）+ 404（用户不存在） |
+| `GET /assignments` | 200（学生 1 条 / 教师含草稿 2 条）+ 403（跨课程）+ 404（课程不存在）+ 400（缺 `userId`） |
+| `GET /submissions` | 200（学生置空 / 教师完整 / published 学生可见 / submitted 置空）+ 400×2 + 403×2 + 404 |
+| `GET /submissions/:id` | 200（教师完整 / 学生置空 / 学生看自己 published）+ 403×2 + 404 + 400 |
+| `POST /submissions` | 200（JSON base64 成功落盘 + multipart 成功落盘）+ 400×6（缺参/白名单）+ 403×3 + 404×2 |
+
+> 验证方式：`cd plugins/dsh-plugin-learnbuddy && node --test test/missing-endpoints.test.js`
+> —— 11 个用例全部通过，使用**真实** `DatabaseStore`（in-memory SQLite + 种子数据）、**真实** `StorageService`（临时目录物理落盘）、**真实** HTTP Server，无 mock。
+> 全量回归：`npm test` → 198 个用例（基线 187 + 新增 11），**新增用例 0 失败**；
+> 基线中 14 个失败均为本机缺少 `@firecrawl/anydoc` 原生依赖（`engineUnavailable`）所致，与本次改动无关（改动前后失败集合逐条一致）。
+> 关键反证断言：上传约 240KB 报告后，直查 `submissions` 表原始行，**既不含 base64 也不含报告正文**（`rawDump.length < 2000` 字节）。
+
+### 7.4 已知端点缺口
+
+> ✅ **task-17（2026-09-12）已补齐本表前 4 项中的 5 个端点**（课程/作业/提交列表与创建提交），
+> 保留删除线仅作历史记录；其余条目仍为待办。
+
+| 缺口 | 影响 | 状态 |
+| --- | --- | --- |
+| ~~无 `GET /submissions?assignmentId=&userId=`~~ | ~~前端无法拉取提交列表 / 学生成绩明细~~ | ✅ **已补齐（㉑）** |
+| ~~无 `GET /submissions/:id?userId=`~~ | ~~无法查看单份提交详情~~ | ✅ **已补齐（㉒）** |
+| ~~无 `POST /submissions`（提交报告）~~ | ~~前端无法发起新提交，评阅链路无法从 UI 走通~~ | ✅ **已补齐（㉓）** |
+| ~~无课程列表端点（`getUserCourses` 无路由）~~ | ~~前端无法动态拉课程下拉框，只能硬编码~~ | ✅ **已补齐（⑲）** |
+| ~~无作业列表端点（`getAssignments` 无路由）~~ | ~~前端无法拉作业列表，只能硬编码~~ | ✅ **已补齐（⑳）** |
+| 无 `DELETE /materials/:id` | 上传后无法删除，联调易留垃圾数据 | ⏳ 待办 |
+| 无 `DELETE /submissions/:id` | 新提交无法撤回，联调同样会留测试数据 | ⏳ 待办 |
+| `GET /materials` 无 `userId` 时泄漏 `private` 资料 | 越权泄漏（§4.3） | ⏳ 待办（**新端点已不再有此模式**） |
+| 登录不校验密码 | 安全缺口，上生产前必修 | ⏳ 待办 |
+| `GET /analytics/*` 无鉴权 | 任何人可拉全班学情（§4.4） | ⏳ 待办 |
 
 ---
 
@@ -1707,8 +2240,10 @@ node scripts/verify-live-llm.mjs
 | 其它路径 | 透明反向代理到 DSH Web（`127.0.0.1:3080`），支持 HTTP 与 WebSocket upgrade |
 | DSH 未启动时 | 网关回 `502` `{"ok":false,"error":"DSH 服务暂未启动或正在重启中"}` |
 
-> 与前端业务无直接关系，故不计入本文「18 个端点」。
+> 与前端业务无直接关系，故不计入本文「23 个端点」。
 
 ---
 
-*本文由 task-16-api-docs 产出。所有标注「实测」的响应均为 2026-09-11 对 `http://129.204.52.57:3088` 的真实调用结果；标注「⚠️ 未实测」者为代码推导，已显式声明。文档不含任何真实密钥。*
+*本文由 task-16-api-docs 产出，task-17-missing-endpoints 增量更新（新增 §3.7 共 5 个端点，计数 18 → 23）。*
+*task-16 标注「实测」的响应均为 2026-09-11 对 `http://129.204.52.57:3088` 的真实调用结果；task-17 新增端点的响应为 2026-09-12 对本仓真实 HTTP 路由的调用结果。*
+*文档不含任何真实密钥。*

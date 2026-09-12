@@ -1,8 +1,21 @@
 # LearnBuddy 前端对接指南
 
 > **写给**：黄山（前端 UI 与数据对接）
-> **版本**：2026-09-11
-> **配套参考**：[`docs/API.md`](./API.md) —— 18 个端点的完整字段表、真实响应 JSON、错误码。本文是「怎么做」，那篇是「字段是什么」。
+> **版本**：2026-09-11（**2026-09-12 增量更新**）
+> **配套参考**：[`docs/API.md`](./API.md) —— 23 个端点的完整字段表、真实响应 JSON、错误码。本文是「怎么做」，那篇是「字段是什么」。
+
+> 🆕 **task-17 更新（2026-09-12）：原先缺的 4 个端点已全部补齐（另附 1 个提交详情端点，共 5 个），本文原先的「坑 5」与「§6 绕过方案」已作废。**
+>
+> | 端点 | 用途 |
+> |---|---|
+> | `GET /courses?userId=` | 课程列表（学生=已选 / 教师=所授） |
+> | `GET /assignments?userId=&courseId=` | 作业列表（学生仅见已发布） |
+> | `GET /submissions?assignmentId=&userId=` | **提交列表（未发布报告的成绩/评语对学生置空）** |
+> | `GET /submissions/:id?userId=` | 单份提交详情 |
+> | `POST /submissions` | 学生提交报告（落盘 + status=submitted） |
+>
+> ⚠️ **这 5 个端点 `userId` 一律必填**，缺失返回 `400`。字段表与真实响应见 [`docs/API.md`](./API.md) §3.7。
+> ✅ 因此**结构数据（课程/作业/提交）现在也可以全部从后端拿**，不再需要方案 A 的本地兜底。
 
 ---
 
@@ -72,18 +85,19 @@ DeepSeek 账户余额不足，所以现在：
 
 > 💡 **演示小技巧**：如实标注「当前为降级模式」反而更显诚实，而且说明**系统有容错设计**——这其实是加分项（评委喜欢看系统怎么处理故障）。
 
-### 坑 5：🚨 **缺 4 个端点**，这决定了你的改造顺序
+### 坑 5：✅ ~~🚨 **缺 4 个端点**~~ → **已补齐（task-17，2026-09-12）**
 
-后端目前**没有**这些接口：
+*（原文记录：后端当时没有下列接口，这是改造顺序的最大约束。）*
 
-| 缺失 | 影响 |
-|---|---|
-| `GET /submissions` | 前端**拉不到**提交列表、拿不到学生成绩明细 |
-| `POST /submissions` | 前端**无法**发起新提交 |
-| `GET /courses` | 前端拉不到课程下拉框 |
-| `GET /assignments` | 前端拉不到作业列表 |
+| 原缺失 | 影响 | 现状 |
+|---|---|---|
+| `GET /submissions` | 前端**拉不到**提交列表、拿不到学生成绩明细 | ✅ 已补齐（另含 `GET /submissions/:id`） |
+| `POST /submissions` | 前端**无法**发起新提交 | ✅ 已补齐 |
+| `GET /courses` | 前端拉不到课程下拉框 | ✅ 已补齐 |
+| `GET /assignments` | 前端拉不到作业列表 | ✅ 已补齐 |
 
-👉 **做法**：见下方 **§6 绕过方案**。**不要**自己造明细数据冒充后端结果。
+👉 **做法**：现在可以直连后端拿结构数据（**记得带 `userId`**）。字段表见 [`docs/API.md`](./API.md) §3.7。
+⚠️ 唯一要留意的契约：**学生视角下，非 `published` 报告的 `grades` 为 `[]`、`summary` 为 `""`**——UI 要显示「评阅中/待发布」，不要显示 0 分或空白评语。
 
 ### 坑 6：`status: "pending"` 是**正常契约**，不是「加载中」
 
@@ -175,10 +189,11 @@ API Base:   http://129.204.52.57:3088/api/learnbuddy
 | # | 功能 | 接口 |
 |---|---|---|
 | 1 | 登录 | `POST /auth/login` |
-| 2 | 资料库列表 | `GET /materials?userId=&courseId=` |
-| 3 | 课件详情（原文 + 知识点） | `GET /materials/:id/context?userId=` |
-| 4 | 伴学答疑 | `POST /qa/ask`（注意 `fallback`） |
-| 5 | 答疑卡检索（可选） | `POST /qa/cards/search` |
+| 2 | **课程下拉框** | **`GET /courses?userId=`**（task-17 新增，**必带 `userId`**） |
+| 3 | 资料库列表 | `GET /materials?userId=&courseId=` |
+| 4 | 课件详情（原文 + 知识点） | `GET /materials/:id/context?userId=` |
+| 5 | 伴学答疑 | `POST /qa/ask`（注意 `fallback`） |
+| 6 | 答疑卡检索（可选） | `POST /qa/cards/search` |
 
 **✅ 验收标准**：登录后能看到**后端真实课件列表**；点进课件能看到真实知识点；提问能得到后端响应（并正确识别降级）。
 
@@ -186,12 +201,19 @@ API Base:   http://129.204.52.57:3088/api/learnbuddy
 
 | # | 功能 | 接口 |
 |---|---|---|
-| 6 | 单份评阅 | `POST /grader/grade-submission` `{submissionId}` |
-| 7 | 全班批量评阅 | `POST /grader/batch` `{assignmentId, concurrency}` |
-| 8 | 失败重试 | `POST /grader/retry` `{submissionId}` |
-| 9 | 教师复核发布 | `POST /grader/review-publish` |
+| 7 | **作业列表（含 rubric）** | **`GET /assignments?userId=&courseId=`**（task-17 新增） |
+| 8 | **学生交报告** | **`POST /submissions`** `{studentId, assignmentId, fileName, content}`（task-17 新增） |
+| 9 | **提交列表 / 成绩明细** | **`GET /submissions?assignmentId=&userId=`**（task-17 新增） |
+| 10 | **单份提交详情** | **`GET /submissions/:id?userId=`**（task-17 新增） |
+| 11 | 单份评阅 | `POST /grader/grade-submission` `{submissionId}` |
+| 12 | 全班批量评阅 | `POST /grader/batch` `{assignmentId, concurrency}` |
+| 13 | 失败重试 | `POST /grader/retry` `{submissionId}` |
+| 14 | 教师复核发布 | `POST /grader/review-publish` |
 
 **✅ 验收标准**：点击「评阅」能看到**后端返回的逐项评分**（每项带 `score` / `max` / `comment` / **`page` 页码证据** / `evidence` 原文引用）。
+
+> 🔴 **必须处理的契约**：学生视角下，非 `published` 报告的 `grades` 为 `[]`、`summary` 为 `""`（后端强制置空）。
+> UI 要渲染成「评阅中 / 待教师发布」，**不要**显示 0 分或空白评语。教师视角同一份报告是完整分数——这正是赛题评分点。
 
 > 💡 这是你**最能出彩**的地方 —— `evidence` 字段是报告里的**原文引用**，把它渲染成「评分依据卡」，视觉冲击力很强。
 
@@ -199,8 +221,8 @@ API Base:   http://129.204.52.57:3088/api/learnbuddy
 
 | # | 功能 | 接口 |
 |---|---|---|
-| 10 | 作业学情 + 薄弱项 | `GET /analytics/assignment/:id?skipLLM=1` |
-| 11 | 课程大盘 | `GET /analytics/course/:id?skipLLM=1` |
+| 15 | 作业学情 + 薄弱项 | `GET /analytics/assignment/:id?skipLLM=1` |
+| 16 | 课程大盘 | `GET /analytics/course/:id?skipLLM=1` |
 
 **✅ 验收标准**：图表数字来自后端（不是前端算的）。
 
@@ -208,30 +230,41 @@ API Base:   http://129.204.52.57:3088/api/learnbuddy
 
 ---
 
-## 6. 缺端点的绕过方案（重要，决定你的排期）
+## 6. ~~缺端点的绕过方案~~ → ✅ 已不需要（task-17 已补齐）
 
-后端**没有**提交列表/创建提交/课程列表/作业列表端点。三个选择：
+*（本节保留作历史记录：task-17 之前后端没有提交列表/创建提交/课程列表/作业列表端点。）*
 
-### 方案 A（推荐，你立刻能开工）
+**现状（2026-09-12 起）**：5 个端点已全部上线，**直接用真接口即可**，无需任何本地兜底：
 
-**「本地负责编排，后端负责算分」**：
+```ts
+const BASE = "http://129.204.52.57:3088/api/learnbuddy";
+// 课程下拉框
+const courses = await fetch(`${BASE}/courses?userId=${uid}`).then(r => r.json());
+// 作业列表（学生只会拿到已发布作业）
+const assignments = await fetch(`${BASE}/assignments?userId=${uid}&courseId=${cid}`).then(r => r.json());
+// 提交列表（学生：仅自己；教师：全班）
+const submissions = await fetch(`${BASE}/submissions?assignmentId=${aid}&userId=${uid}`).then(r => r.json());
+// 交报告
+await fetch(`${BASE}/submissions`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ studentId: uid, assignmentId: aid, fileName, encoding: "base64", content: base64 }),
+});
+```
 
-- 课程、作业、提交列表这些**结构数据**暂时继续用你本地的（或固定 2~3 个演示条目）
-- 但**提交 ID 用后端的真实 ID**（`sub-zhou-net` / `sub-xu-net`）
-- **评分结果 100% 从后端拿**（`grader/grade-submission`）
-- 学情从后端拿（`analytics/assignment/lab-tcp`）
+### ~~方案 A（本地编排 + 后端算分）~~ —— 已不需要
 
-这样你**今天就能开始**，而且最关键的「真评分」是真的。
+> 原文：课程、作业、提交列表这些**结构数据**暂时用本地数据，评分与学情从后端拿。
+> **现在结构数据也能从后端拿**，方案 A 仅在你希望「先只换评分链路」时作为过渡手段保留。
 
-### 方案 B（如果我这边补端点）
+### ~~方案 B（等后端补端点）~~ —— ✅ 已交付
 
-我去派任务补上 `GET /submissions`、`POST /submissions`、`GET /courses`、`GET /assignments`（估计 1~2 天），你等一下再动 P1。
+原先计划的 `GET /submissions`、`POST /submissions`、`GET /courses`、`GET /assignments`
+**已于 2026-09-12 补齐**（另附 `GET /submissions/:id`），见上表。
 
-### 方案 C（不推荐）
+### ~~方案 C（用 `/analytics/*` 凑展示）~~ —— 依然不推荐
 
-用 `/analytics/*` 的聚合数字凑展示 —— 只有总数没有明细，撑不起"逐项评分"这个卖点。
-
-> 📌 **我的建议**：先用 **方案 A** 把 P0 做完（1~2 天），同时告诉我你需要哪些端点，我并行去补。你做完 P0 我大概率也补完了。
+只有总数没有明细，撑不起"逐项评分"这个卖点。
 
 ---
 
@@ -531,10 +564,12 @@ async function handleAsk(question: string) {
 | 评分老是 92 分不变 | **后端在降级模式**（余额问题） | 见坑 4，这是**后端的事**，不是你的 bug |
 | 提问回答很套路 | 同上（降级） | 同上 |
 | 评阅报 400 | 状态机不允许 | 查 [`docs/API.md`](./API.md) §5 状态机表 |
-| 找不到提交列表接口 | 端点确实缺失 | 见 §6，用方案 A |
+| ~~找不到提交列表接口~~ | ✅ **已补齐** | 用 `GET /submissions?assignmentId=&userId=`（见坑 5、API.md §3.7） |
+| 新端点和老接口不一样，少了 `userId` 就报 400 | 新端点**强制要求身份** | 这是刻意的防越权设计，带上 `userId` 即可（API.md §3.7） |
+| 学生看到成绩是空的 `[]` | 报告还没 `published` | **这是安全红线，不是 bug**：未发布成绩对学生在 API 层就被置空（API.md §3.7 / §4.1） |
 
 **找谁**：
-- 接口字段/行为不懂 → 先查 [`docs/API.md`](./API.md)（18 个端点全有实测响应）
+- 接口字段/行为不懂 → 先查 [`docs/API.md`](./API.md)（23 个端点全有实测响应）
 - 接口不够用 / 需要新端点 → **告诉我**（我这边派任务补）
 - 后端 bug / 数据不对 → **告诉我**，你不用改后端
 
