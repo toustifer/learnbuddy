@@ -16,4 +16,6 @@ return module.exports;
 }});\n`;
 await mkdir(new URL("dist/", import.meta.url), { recursive: true });
 await writeFile(new URL("dist/client.js", import.meta.url), output);
+// Existing server previews can rebuild this plain JavaScript without TypeScript installed.
+await writeFile(new URL("dist/client.portable.cjs", import.meta.url), combined);
 console.log(`LearnBuddy DSH UI: ${Buffer.byteLength(output)} bytes`);

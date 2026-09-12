@@ -1,4 +1,4 @@
-import type { Knowledge, Material, User } from "./types";
+import type { Course, Knowledge, Material, User } from "./types";
 
 export const LIVE_MODE =
   import.meta.env.VITE_DATA_MODE !== "demo" &&
@@ -80,8 +80,13 @@ export async function loginAccount(
   );
   if (!data.user?.id || !["student", "teacher"].includes(data.user.role))
     throw new ApiError("服务返回的账号身份不完整。");
+  const courses = data.user.courses ?? (await request<{ courses: Course[] }>(
+    `/workspace?userId=${encodeURIComponent(data.user.id)}`,
+  )).courses;
+  if (!Array.isArray(courses)) throw new ApiError("服务未返回有效的课程列表。");
   return {
     ...data.user,
+    courses,
     initials: data.user.initials || data.user.name.slice(0, 1),
   };
 }

@@ -63,6 +63,7 @@ describe("server data boundaries", () => {
               role: "teacher",
               name: "测试教师",
               username: "user",
+              courses: [],
             },
           }),
         ),
@@ -72,6 +73,15 @@ describe("server data boundaries", () => {
       role: "teacher",
       initials: "测",
     });
+  });
+  it("loads actual courses when the existing server login does not include them", async () => {
+    const course = { id: "new-course", title: "服务器新增课程", teacherId: "t-new", code: "NEW", color: "green", description: "" };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({ ok: true, user: { id: "s-new", role: "student", name: "新学生", username: "new" } }))
+      .mockResolvedValueOnce(response({ ok: true, courses: [course] }));
+    vi.stubGlobal("fetch", fetcher);
+    expect((await loginAccount("new", "123")).courses).toEqual([course]);
+    expect(String(fetcher.mock.calls[1][0])).toContain("/workspace?userId=s-new");
   });
   it("rejects HTML errors and malformed successful list payloads", async () => {
     const fetcher = vi
