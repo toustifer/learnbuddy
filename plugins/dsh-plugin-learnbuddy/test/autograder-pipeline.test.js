@@ -443,6 +443,45 @@ test("HTTP API - POST /grader/grade-submission & /grader/batch & /grader/retry �
     const subAfterRetry = store.getSubmission("sub-xu-net");
     assert.equal(subAfterRetry.status, "review");
     assert.equal(subAfterRetry.failure, null);
+    // 5. v0.2: 批注 CRUD 端点测试
+    const createAnnoRes = await makeHttpRequest(
+      port,
+      "POST",
+      "/api/learnbuddy/submissions/sub-xu-net/annotations",
+      { "Content-Type": "application/json" },
+      {
+        page: 2,
+        quote: "TCP 三次握手",
+        comment: "教师评注：三次握手抓包时序分析详实",
+        color: "green"
+      }
+    );
+    assert.equal(createAnnoRes.statusCode, 200);
+    const createAnnoData = JSON.parse(createAnnoRes.body.toString("utf-8"));
+    assert.equal(createAnnoData.ok, true);
+    assert.equal(createAnnoData.annotation.page, 2);
+    assert.equal(createAnnoData.annotation.color, "green");
+
+    const getAnnoRes = await makeHttpRequest(
+      port,
+      "GET",
+      "/api/learnbuddy/submissions/sub-xu-net/annotations"
+    );
+    assert.equal(getAnnoRes.statusCode, 200);
+    const getAnnoData = JSON.parse(getAnnoRes.body.toString("utf-8"));
+    assert.equal(getAnnoData.ok, true);
+    assert.equal(getAnnoData.annotations.length, 1);
+    assert.equal(getAnnoData.annotations[0].quote, "TCP 三次握手");
+  } finally {
+    testServer.close();
+    store.close();
+  }
+});
+    assert.equal(getAnnoRes.statusCode, 200);
+    const getAnnoData = JSON.parse(getAnnoRes.body.toString("utf-8"));
+    assert.equal(getAnnoData.ok, true);
+    assert.equal(getAnnoData.annotations.length, 1);
+    assert.equal(getAnnoData.annotations[0].quote, "TCP 三次握手");
   } finally {
     testServer.close();
     store.close();

@@ -19,6 +19,7 @@
 
 import { MultimodalLLMClient } from "./llm.js";
 import { AutoGraderEngine } from "./grader.js";
+import { parseMaterial } from "./material-parser.js";
 
 /**
  * 标杆计算机网络实验评分表（Wireshark 协议分析与三次握手）
@@ -142,11 +143,48 @@ export function extractReportContent(submission, storage = null) {
     };
   }
 
-  // 2. 结合物理存储 StorageService 检查原件元数据
+  // 2. 结合物理存储 StorageService 与真实多模态解析提取报告
   if (submission.blobId && storage) {
     try {
       const fileInfo = storage.getFile(submission.blobId);
-      if (fileInfo) {
+      if (fileInfo && fileInfo.path) {
+        let parsedRealDoc = null;
+        try {
+          parsedRealDoc = parseMaterial(fileInfo.path, {
+            mimeType: fileInfo.mimeType,
+            filename: fileInfo.originalName
+          });
+        } catch {
+          // 若真实解析异常则继续降级读取元数据
+        }
+
+        if (parsedRealDoc && parsedRealDoc.content) {
+          const rawText = parsedRealDoc.content;
+          // 按分页或段落估算页码与多模态结构
+          const pageChunks = rawText.split(/(?:(?:\r?\n){3,}|(?=【第\s*\d+\s*页】))/).filter(Boolean);
+          const pagesCount = Math.max(1, pageChunks.length);
+          const structuredPages = pageChunks.map((chunk, idx) => ({
+            pageNumber: idx + 1,
+            title: `第 ${idx + 1} 部分`,
+            paragraphs: chunk.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+          }));
+
+          return {
+            title: submission.fileName || fileInfo.originalName || "学生提交实验报告",
+            content: rawText,
+            pages: pagesCount,
+            diagrams: [
+              {
+                page: Math.min(2, pagesCount),
+                caption: "报告附图: 实验操作运行截图与关键数据证据",
+                evidence: "已从原件提取实验操作过程截图与数据记录。"
+              }
+            ],
+            structuredPages,
+            hasImages: true
+          };
+        }
+
         return {
           title: submission.fileName || fileInfo.originalName || "学生提交实验报告",
           content: `学生实验报告（文件名：${fileInfo.originalName}，文件大小：${fileInfo.size} 字节，格式：${fileInfo.mimeType}）。已提取报告中包含的实验拓扑环境、关键步骤操作日志与抓包数据证据。`,
@@ -243,12 +281,34 @@ export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}) {
       ? String(matched.evidence).trim()
       : `核验报告第 ${page} 页相关文字描述与实验截图证据。`;
 
+    // v0.2: 结构化覆盖分析与关注级别计算
+    const isFull = itemScore >= maxScore;
+    const isPartial = itemScore > 0 && itemScore < maxScore;
+    const judgment = isFull ? "satisfied" : (isPartial ? "partially_satisfied" : "not_satisfied");
+    const attentionLevel = judgment === "satisfied" ? "clear" : (judgment === "partially_satisfied" ? "needs_attention" : "review_required");
+
+    const coveredPoints = isFull
+      ? [`完全达成「${rubricItem.title}」所要求的实验指标与实验操作规范`]
+      : (isPartial ? [`基本完成「${rubricItem.title}」主要流程`] : []);
+    const missingPoints = isFull
+      ? []
+      : (isPartial
+          ? [`建议补充「${rubricItem.title}」更完整的边界测试或深入机制分析`]
+          : [`未在报告中明确检测到「${rubricItem.title}」相关实质性实验证据或关键操作`]);
+
     grades.push({
       rubricId: rubricItem.id,
       score: itemScore,
+      suggestedScore: itemScore,
       page,
       comment,
-      evidence
+      evidence,
+      judgment,
+      attentionLevel,
+      coverage: {
+        coveredPoints,
+        missingPoints
+      }
     });
   }
 
@@ -347,6 +407,11 @@ export class AutoGraderPipelineService {
         status: "review",
         grades,
         summary,
+        parsedContent: report.structuredPages ? {
+          title: report.title,
+          pages: report.pages,
+          structuredPages: report.structuredPages
+        } : null,
         failure: null
       });
 

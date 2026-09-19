@@ -140,12 +140,26 @@ export type Route =
   | { page: "report"; id: string }
   | { page: "insights"; courseId?: string };
 export interface DocumentPage {
+  pageNumber?: number;
   heading: string;
   eyebrow: string;
   paragraphs: string[];
-  diagram?: "handshake" | "queue" | "index";
+  diagram?: "handshake" | "queue" | "index" | string;
+  diagramUrl?: string;
   code?: string;
   caption?: string;
+  highlights?: string[];
+}
+
+export interface AnnotationItem {
+  id: string;
+  rubricId?: string;
+  page: number;
+  text: string;
+  author: "ai" | "teacher";
+  color?: "yellow" | "green" | "blue" | "red" | "purple";
+  createdAt: string;
+  quote?: string;
 }
 
 export interface ServerGrade {
@@ -153,9 +167,15 @@ export interface ServerGrade {
   title?: string;
   max?: number;
   score: number;
+  suggestedScore?: number;
+  teacherScore?: number;
   page?: number;
   comment?: string;
   evidence?: string;
+  judgment?: "satisfied" | "partially_satisfied" | "not_satisfied" | "professional_judgment";
+  coveredPoints?: string[];
+  missingPoints?: string[];
+  attentionLevel?: "clear" | "needs_attention" | "review_required";
 }
 export interface ServerReview {
   submissionId: string;

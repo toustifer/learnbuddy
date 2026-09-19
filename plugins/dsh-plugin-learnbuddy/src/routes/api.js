@@ -875,7 +875,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     // ==========================================
     if (req.method === "POST" && pathname === "/api/learnbuddy/grader/review-publish") {
       const body = await parseJsonBody(req);
-      const { submissionId, grades, summary, strictRange } = body;
+      const { submissionId, grades, summary, strictRange, annotations } = body;
       const teacherId = body.teacherId || body.userId || body.reviewerId;
 
       if (!submissionId) {
@@ -893,7 +893,8 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
           teacherId,
           grades,
           summary,
-          strictRange: strictRange === true
+          strictRange: strictRange === true,
+          annotations: Array.isArray(annotations) ? annotations : undefined
         });
         return sendJson(res, 200, result);
       } catch (err) {

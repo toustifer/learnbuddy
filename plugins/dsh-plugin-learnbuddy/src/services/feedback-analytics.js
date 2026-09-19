@@ -246,6 +246,9 @@ export class FeedbackAnalyticsService {
         max: maxScore,
         score: finalScore,
         page,
+        judgment: matched.judgment || (finalScore >= maxScore * 0.85 ? "satisfied" : (finalScore > 0 ? "partially_satisfied" : "not_satisfied")),
+        coverage: matched.coverage || { coveredPoints: [], missingPoints: [] },
+        attentionLevel: matched.attentionLevel || "clear",
         comment: matched.comment ? String(matched.comment).trim() : `对照标准「${rubricItem.title}」，教师复核通过。`,
         evidence: matched.evidence ? String(matched.evidence).trim() : `第 ${page} 页相关数据与实验截图。`,
         ...(clamped ? { clamped: true, originalScore: rawScore } : {})
@@ -279,6 +282,7 @@ export class FeedbackAnalyticsService {
         totalScore: calculatedTotalScore,
         maxScore: totalMaxScore,
         summary: finalSummary,
+        annotations: Array.isArray(params.annotations) ? structuredClone(params.annotations) : (fresh.annotations || []),
         clamped: clampedItems.length > 0,
         clampedItems: structuredClone(clampedItems)
       };
@@ -287,6 +291,7 @@ export class FeedbackAnalyticsService {
         status: "published",
         grades: validatedGrades,
         summary: finalSummary,
+        annotations: versionSnapshot.annotations,
         history: [...existingHistory, versionSnapshot],
         failure: null
       });
@@ -433,6 +438,25 @@ export class FeedbackAnalyticsService {
       .filter((item) => item.lossRate > 0)
       .sort((a, b) => b.lossRate - a.lossRate);
 
+    // 5.1 结构化归因分析（v0.2 F10）：从失分率高的评分项中提取失分归因、缺失知识点与高频错误
+    const commonIssues = weakestItems.slice(0, 3).map((w) => {
+      const missingEvidenceStudents = publishedSubmissions.filter((s) => {
+        const grade = Array.isArray(s.grades) ? s.grades.find((g) => g.rubricId === w.rubricId) : null;
+        return grade && (grade.judgment === "not_satisfied" || grade.judgment === "partially_satisfied" || grade.score < w.max * 0.7);
+      }).length;
+
+      return {
+        rubricId: w.rubricId,
+        title: w.title,
+        lossRate: w.lossRate,
+        impactedStudents: missingEvidenceStudents,
+        rootCause: w.lossRate > 0.4
+          ? `普遍缺少对「${w.title}」的关键数据支撑或原理解释不充分`
+          : `部分同学在「${w.title}」的细节步骤或图表截图中有所遗漏`,
+        recommendation: `在复习或备课中，重点针对 ${w.title} 进行案例拆解与反例分析。`
+      };
+    });
+
     // 6. 调度大模型/教学规则生成针对性的「下周备课/补讲建议（teachingSuggestions）」
     const teachingSuggestions = await this._generateTeachingSuggestions(
       assignment,
@@ -462,6 +486,7 @@ export class FeedbackAnalyticsService {
       scoreDistribution,
       rubricAnalytics,
       weakestItems,
+      commonIssues,
       teachingSuggestions
     };
   }
