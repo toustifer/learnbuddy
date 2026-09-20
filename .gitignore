@@ -34,3 +34,30 @@ Thumbs.db
 
 # LearnBuddy 运行时数据（SQLite 数据库由服务启动时自动创建，不入库）
 plugins/dsh-plugin-learnbuddy/data/
+
+# ===== 安全与凭据门禁（见 docs/ima-handoff 05-附录 §2）=====
+# 证书与密钥文件
+*.pem
+*.key
+*.crt
+*.cer
+*.pfx
+*.p12
+*.ppk
+# SSH 私钥
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+# 环境变量补充
+.env.*
+!.env.example
+
+# ===== 运行时产物（严禁入库）=====
+plugins/dsh-plugin-learnbuddy/uploads/
+plugins/dsh-plugin-learnbuddy/session/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
