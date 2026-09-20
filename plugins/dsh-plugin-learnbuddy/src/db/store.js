@@ -120,7 +120,8 @@ function mapSubmission(row) {
     grades: row.grades ? JSON.parse(row.grades) : [],
     summary: row.summary || "",
     history: row.history ? JSON.parse(row.history) : [],
-    failure: row.failure ?? null
+    failure: row.failure ?? null,
+    annotations: row.annotations ? JSON.parse(row.annotations) : []
   };
 }
 
@@ -541,8 +542,8 @@ export class DatabaseStore {
     const stmt = this.db.prepare(`
       INSERT INTO submissions (
         id, assignment_id, student_id, file_name, submitted_at, status,
-        sample_key, blob_id, grades, summary, history, failure
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        sample_key, blob_id, grades, summary, history, failure, annotations
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       submission.id,
@@ -556,7 +557,8 @@ export class DatabaseStore {
       JSON.stringify(submission.grades || []),
       submission.summary || "",
       JSON.stringify(submission.history || []),
-      submission.failure || null
+      submission.failure || null,
+      JSON.stringify(submission.annotations || [])
     );
     return this.getSubmission(submission.id);
   }
@@ -680,7 +682,8 @@ export class DatabaseStore {
         grades = ?,
         summary = ?,
         history = ?,
-        failure = ?
+        failure = ?,
+        annotations = ?
       WHERE id = ?
     `);
     stmt.run(
@@ -695,6 +698,7 @@ export class DatabaseStore {
       merged.summary || "",
       JSON.stringify(merged.history || []),
       merged.failure || null,
+      JSON.stringify(merged.annotations || []),
       id
     );
     return this.getSubmission(id);

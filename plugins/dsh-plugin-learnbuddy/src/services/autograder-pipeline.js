@@ -19,7 +19,7 @@
 
 import { MultimodalLLMClient } from "./llm.js";
 import { AutoGraderEngine } from "./grader.js";
-import { parseMaterial } from "./material-parser.js";
+import { MaterialParserService } from "./material-parser.js";
 
 /**
  * 标杆计算机网络实验评分表（Wireshark 协议分析与三次握手）
@@ -150,12 +150,11 @@ export function extractReportContent(submission, storage = null) {
       if (fileInfo && fileInfo.path) {
         let parsedRealDoc = null;
         try {
-          parsedRealDoc = parseMaterial(fileInfo.path, {
-            mimeType: fileInfo.mimeType,
-            filename: fileInfo.originalName
-          });
+          if (fileInfo.extractedContent) {
+            parsedRealDoc = { content: fileInfo.extractedContent };
+          }
         } catch {
-          // 若真实解析异常则继续降级读取元数据
+          // 若读取异常则继续降级读取元数据
         }
 
         if (parsedRealDoc && parsedRealDoc.content) {

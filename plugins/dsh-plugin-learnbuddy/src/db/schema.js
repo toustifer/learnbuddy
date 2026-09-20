@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS submissions (
   summary TEXT DEFAULT '',
   history TEXT DEFAULT '[]',
   failure TEXT,
+  annotations TEXT DEFAULT '[]',
   FOREIGN KEY (assignment_id) REFERENCES assignments(id),
   FOREIGN KEY (student_id) REFERENCES users(id)
 );

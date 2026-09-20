@@ -906,6 +906,50 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     }
 
     // ==========================================
+    // 7.8 提交报告批注 (Annotations CRUD)
+    //     GET  /api/learnbuddy/submissions/:id/annotations
+    //     POST /api/learnbuddy/submissions/:id/annotations
+    // ==========================================
+    const submissionAnnoMatch = pathname.match(/^\/api\/learnbuddy\/submissions\/([^/]+)\/annotations$/);
+    if (submissionAnnoMatch) {
+      const submissionId = decodeURIComponent(submissionAnnoMatch[1]);
+      if (req.method === "GET") {
+        const sub = store.getSubmission(submissionId);
+        if (!sub) {
+          return sendJson(res, 404, { ok: false, error: "提交记录不存在" });
+        }
+        return sendJson(res, 200, {
+          ok: true,
+          submissionId,
+          annotations: sub.annotations || []
+        });
+      }
+      if (req.method === "POST") {
+        const body = await parseJsonBody(req);
+        const sub = store.getSubmission(submissionId);
+        if (!sub) {
+          return sendJson(res, 404, { ok: false, error: "提交记录不存在" });
+        }
+        const existingList = Array.isArray(sub.annotations) ? [...sub.annotations] : [];
+        const newAnnotation = {
+          id: body.id || `anno-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          page: typeof body.page === "number" ? body.page : 1,
+          quote: body.quote || "",
+          comment: body.comment || "",
+          color: body.color || "yellow",
+          createdAt: new Date().toISOString()
+        };
+        existingList.push(newAnnotation);
+        store.updateSubmission(submissionId, { annotations: existingList });
+        return sendJson(res, 200, {
+          ok: true,
+          submissionId,
+          annotation: newAnnotation
+        });
+      }
+    }
+
+    // ==========================================
     // 8.1 作业维度学情分析与全班薄弱项
     //     GET /api/learnbuddy/analytics/assignment/:id
     // ==========================================
