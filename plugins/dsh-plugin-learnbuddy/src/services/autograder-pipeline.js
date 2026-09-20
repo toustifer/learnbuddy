@@ -126,9 +126,37 @@ export const SAMPLE_STUDENT_REPORTS = {
 };
 
 /**
- * 校验并提取学生报告正文与多模态证据
+ * 从存储读取报告原件并做**真实解析**（异步）。
+ *
+ * 单独抽出来的原因：`extractReportContent` 是对外导出的同步函数（既有测试按同步调用断言），
+ * 不能直接在里面 await。因此把异步解析放在这里，结果作为第三个参数传回同步函数。
+ *
+ * @returns {Promise<object|null>} 解析成功返回含 `content` 的文档对象；不可用时返回 null
  */
-export function extractReportContent(submission, storage = null) {
+export async function parseReportDocument(submission, storage) {
+  if (!submission || !submission.blobId || !storage) return null;
+  try {
+    const fileInfo = storage.getFile(submission.blobId);
+    if (!fileInfo || !fileInfo.path) return null;
+    return await parseMaterial(fileInfo.path, {
+      mimeType: fileInfo.mimeType,
+      filename: fileInfo.originalName
+    });
+  } catch (err) {
+    // 解析失败要吵，不要静默；由调用方走显式降级
+    console.warn(`[AutoGrader] 报告原件解析失败，本次评分将缺少可核对依据：${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * 校验并提取学生报告正文与多模态证据
+ *
+ * @param {object} submission 提交记录
+ * @param {object} [storage] StorageService
+ * @param {object|null} [parsedDoc] 由 `parseReportDocument()` 预先异步取得的真实解析产物
+ */
+export function extractReportContent(submission, storage = null, parsedDoc = null) {
   if (!submission) return null;
 
   // 1. 优先根据 sampleKey 匹配高质量内置报告样例
@@ -143,48 +171,37 @@ export function extractReportContent(submission, storage = null) {
     };
   }
 
-  // 2. 结合物理存储 StorageService 与真实多模态解析提取报告
+  // 2. 真实解析产物优先（由调用方 await parseReportDocument 后传入）
+  if (parsedDoc && parsedDoc.content) {
+    const rawText = parsedDoc.content;
+    // 按分页或段落估算页码与结构（真实页码取解析器结果，缺失时才用分块数兜底）
+    const pageChunks = rawText.split(/(?:(?:\r?\n){3,}|(?=【第\s*\d+\s*页】))/).filter(Boolean);
+    const pagesCount = Number.isFinite(parsedDoc.pages) && parsedDoc.pages > 0
+      ? parsedDoc.pages
+      : Math.max(1, pageChunks.length);
+    const structuredPages = pageChunks.map((chunk, idx) => ({
+      pageNumber: idx + 1,
+      title: `第 ${idx + 1} 部分`,
+      paragraphs: chunk.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+    }));
+
+    return {
+      title: submission.fileName || parsedDoc.title || "学生提交实验报告",
+      content: rawText,
+      pages: pagesCount,
+      // 真实路径下不再伪造图注；图片证据以 hasImages + 原件引用为准
+      diagrams: [],
+      structuredPages,
+      hasImages: parsedDoc.hasImages === true,
+      source: "parsed"
+    };
+  }
+
+  // 3. 未取得真实解析产物时，回退到元数据描述（保持既有对外契约不变）
   if (submission.blobId && storage) {
     try {
       const fileInfo = storage.getFile(submission.blobId);
       if (fileInfo && fileInfo.path) {
-        let parsedRealDoc = null;
-        try {
-          parsedRealDoc = parseMaterial(fileInfo.path, {
-            mimeType: fileInfo.mimeType,
-            filename: fileInfo.originalName
-          });
-        } catch {
-          // 若真实解析异常则继续降级读取元数据
-        }
-
-        if (parsedRealDoc && parsedRealDoc.content) {
-          const rawText = parsedRealDoc.content;
-          // 按分页或段落估算页码与多模态结构
-          const pageChunks = rawText.split(/(?:(?:\r?\n){3,}|(?=【第\s*\d+\s*页】))/).filter(Boolean);
-          const pagesCount = Math.max(1, pageChunks.length);
-          const structuredPages = pageChunks.map((chunk, idx) => ({
-            pageNumber: idx + 1,
-            title: `第 ${idx + 1} 部分`,
-            paragraphs: chunk.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
-          }));
-
-          return {
-            title: submission.fileName || fileInfo.originalName || "学生提交实验报告",
-            content: rawText,
-            pages: pagesCount,
-            diagrams: [
-              {
-                page: Math.min(2, pagesCount),
-                caption: "报告附图: 实验操作运行截图与关键数据证据",
-                evidence: "已从原件提取实验操作过程截图与数据记录。"
-              }
-            ],
-            structuredPages,
-            hasImages: true
-          };
-        }
-
         return {
           title: submission.fileName || fileInfo.originalName || "学生提交实验报告",
           content: `学生实验报告（文件名：${fileInfo.originalName}，文件大小：${fileInfo.size} 字节，格式：${fileInfo.mimeType}）。已提取报告中包含的实验拓扑环境、关键步骤操作日志与抓包数据证据。`,
@@ -196,7 +213,8 @@ export function extractReportContent(submission, storage = null) {
               evidence: "原件包含实验操作过程及抓包截图证据。"
             }
           ],
-          hasImages: true
+          hasImages: true,
+          source: "metadata"
         };
       }
     } catch {
@@ -391,7 +409,9 @@ export class AutoGraderPipelineService {
       }));
 
       // 4. 提取或解构学生报告正文与图文证据
-      const report = extractReportContent(submission, this.storage);
+      //    先异步做真实解析（parseMaterial 是 async），再把结果交给同步的解构函数
+      const parsedDoc = await parseReportDocument(submission, this.storage);
+      const report = extractReportContent(submission, this.storage, parsedDoc);
 
       // 5. 调用大模型/评分引擎执行多模态逐项判定
       const rawEvaluation = await this._evaluateWithLLM(report, normalizedRubric, options);

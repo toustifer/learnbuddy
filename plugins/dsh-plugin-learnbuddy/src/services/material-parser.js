@@ -155,10 +155,13 @@ export class MaterialParserService {
    *
    * @param {string} filePath 文件物理路径
    * @param {string} originalName 原始文件名
+   * @param {{ includeContent?: boolean }} [options] 传入 `includeContent:true` 时，
+   *   额外返回 `content`（完整正文）。默认不返回，保持课件链路行为不变。
    * @returns {Promise<object>} 成功：`status:"parsed"`；失败：`status:"failed"` + `error` + `errorCode`
    *   （失败时 `knowledgePoints` 恒为 `[]`，**不存在**「假内容伪装成功」的分支）
    */
-  async parseAndExtract(filePath, originalName) {
+  async parseAndExtract(filePath, originalName, options = {}) {
+    const includeContent = options && options.includeContent === true;
     const ext = path.extname(originalName || filePath).toLowerCase();
     const title = originalName || path.basename(filePath);
     const uploadedAt = new Date().toISOString().replace("T", " ").substring(0, 16);
@@ -216,7 +219,9 @@ export class MaterialParserService {
       keyPointsCount: knowledgePoints.length,
       knowledgePoints,
       embeddedImages: embedded,
-      rawContentSummary: textContent.substring(0, 500)
+      rawContentSummary: textContent.substring(0, 500),
+      // 报告评阅需要完整正文；默认不返回，避免课件链路响应体膨胀
+      ...(includeContent ? { content: textContent } : {})
     };
   }
 
@@ -469,3 +474,43 @@ ${String(content || "").substring(0, 3000)}${embeddedHint}`;
 }
 
 export default MaterialParserService;
+
+/**
+ * 报告评阅专用：解析文件并返回**可核对的完整正文**。
+ *
+ * 与 `MaterialParserService.parseAndExtract` 的关系：
+ *   - 复用同一条解析链路（AnyDoc / 视觉模型 / OCR），保证课件与报告口径一致
+ *   - 额外返回 `content`（完整正文），供 AutoGrader 逐项比对证据
+ *   - 解析失败返回 `null`，由调用方决定如何降级；**绝不返回伪造正文**
+ *
+ * @param {string} filePath 文件物理路径
+ * @param {{ mimeType?: string, filename?: string }} [options]
+ * @returns {Promise<{title:string, fileName:string, content:string, pages:number,
+ *   hasImages:boolean, embeddedImages:number, knowledgePoints:Array}|null>}
+ */
+export async function parseMaterial(filePath, options = {}) {
+  const fileName = (options && options.filename) || path.basename(filePath || "");
+  const parser = new MaterialParserService();
+  const result = await parser.parseAndExtract(filePath, fileName, { includeContent: true });
+
+  // 解析失败或没拿到正文时返回 null，绝不补一段「看起来正常」的假内容
+  if (!result || result.status !== "parsed" || !result.content) {
+    return null;
+  }
+
+  const embeddedCount =
+    result.embeddedImages && Number.isFinite(result.embeddedImages.total)
+      ? result.embeddedImages.total
+      : 0;
+  const isSelfImage = IMAGE_EXTENSIONS.has(path.extname(fileName).toLowerCase());
+
+  return {
+    title: result.title || fileName,
+    fileName,
+    content: result.content,
+    pages: Number.isFinite(result.pages) && result.pages > 0 ? result.pages : 1,
+    hasImages: embeddedCount > 0 || isSelfImage,
+    embeddedImages: embeddedCount,
+    knowledgePoints: Array.isArray(result.knowledgePoints) ? result.knowledgePoints : []
+  };
+}

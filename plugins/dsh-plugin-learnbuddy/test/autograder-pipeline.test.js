@@ -477,13 +477,3 @@ test("HTTP API - POST /grader/grade-submission & /grader/batch & /grader/retry �
     store.close();
   }
 });
-    assert.equal(getAnnoRes.statusCode, 200);
-    const getAnnoData = JSON.parse(getAnnoRes.body.toString("utf-8"));
-    assert.equal(getAnnoData.ok, true);
-    assert.equal(getAnnoData.annotations.length, 1);
-    assert.equal(getAnnoData.annotations[0].quote, "TCP 三次握手");
-  } finally {
-    testServer.close();
-    store.close();
-  }
-});
