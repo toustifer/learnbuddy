@@ -1,11 +1,13 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const dshTarget = env.LEARNBUDDY_DSH_TARGET || "http://129.204.52.57:3088";
   return {
-  plugins: [react()],
+  // tailwindcss 仅服务于 src/rg-bridge.css（v0.2 复核组件的样式桥接，无 preflight）
+  plugins: [react(), tailwindcss()],
   base: "/learnbuddy/",
   build: {
     rolldownOptions: {

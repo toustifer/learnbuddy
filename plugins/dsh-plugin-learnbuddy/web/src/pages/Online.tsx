@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, RefreshCw, Search } from "lucide-react";
 import { Button } from "@radix-ui/themes";
-import { request, fileUrl, ApiError } from "../api";
+import { request, ApiError } from "../api";
 import { visibleAssignments, visibleCourses } from "../domain";
 import { useStore } from "../store-context";
 import { Empty, PageHeading } from "../ui";
 import type { Rubric, ServerGrade, ServerReview, ReportAnnotation, ParsedReportContent } from "../types";
-import { VoiceInput } from "../components/VoiceInput";
 import { CourseOverview, dateLabel, latestSubmission, scoreOf, SubmissionStatus } from "./Academic";
 import { ReportViewer } from "../components/ReportViewer";
 import { RubricEvaluationPanel } from "../components/RubricEvaluationPanel";
@@ -181,6 +180,14 @@ export function OnlineGrading({ id }: { id: string }) {
   const [annotations, setAnnotations] = useState<ReportAnnotation[]>([]);
   const [parsedReport, setParsedReport] = useState<ParsedReportContent | null>(null);
   const saved = submissions.find((s) => s.id === selected);
+  /**
+   * 当前选中报告的复核结果。
+   *
+   * 必须声明在下面的 useEffect **之前**：该 effect 在挂载时就会读取 `current`，
+   * 若声明在后面，会抛 `ReferenceError: Cannot access 'current' before initialization`，
+   * 整个评阅页被错误边界接管，显示「页面暂时没有加载成功」。
+   */
+  const current = reviews[selected];
   useEffect(() => {
     if (assignment && user!.role === "teacher" && saved?.grades.length && !reviews[selected]) {
       setReviews((previous) => ({ ...previous, [selected]: {
@@ -194,6 +201,11 @@ export function OnlineGrading({ id }: { id: string }) {
   // 当切换选中的报告或更新 review 时，同步加载/构造解析的报告内容结构，供左侧阅读器渲染
   useEffect(() => {
     if (!saved) {
+      setParsedReport(null);
+      return;
+    }
+    // assignment 由上层异步加载，未就绪时不构造报告结构（避免读 undefined.title）
+    if (!assignment) {
       setParsedReport(null);
       return;
     }
@@ -248,7 +260,6 @@ export function OnlineGrading({ id }: { id: string }) {
       });
     }
   }, [selected, saved, current, assignment, members]);
-  const current = reviews[selected];
   const isBusy = !!pending || !!busy["server-grade:" + id];
   const rubric: Rubric[] = assignment?.rubric || [];
   if (!assignment || user!.role !== "teacher")
@@ -472,7 +483,16 @@ export function OnlineGrading({ id }: { id: string }) {
               activePage={activePage}
               highlightQuote={activeHighlightQuote}
               annotations={annotations}
-              onAddAnnotation={(ann) => setAnnotations((prev) => [...prev, ann])}
+              onAddAnnotation={(ann) =>
+                setAnnotations((prev) => [
+                  ...prev,
+                  {
+                    ...ann,
+                    id: `ann-${Date.now()}-${prev.length}`,
+                    createdAt: new Date().toISOString(),
+                  },
+                ])
+              }
               onDeleteAnnotation={(annId) => setAnnotations((prev) => prev.filter((a) => a.id !== annId))}
             />
           </div>

@@ -151,6 +151,42 @@ export interface DocumentPage {
   highlights?: string[];
 }
 
+/**
+ * 报告解析后的单页结构（v0.2 双栏阅读器使用）。
+ *
+ * 与 `DocumentPage` 分开定义：阅读器按「一、二、三」渲染小节，用的是 `title`；
+ * 而 `DocumentPage` 用的是 `heading` / `eyebrow` 且两者必填。强行合并会波及 `seed.ts`，
+ * 因此这里独立定义，由 `ReportViewer` 内部归一化后再渲染。
+ */
+export interface ParsedReportPage {
+  pageNumber?: number;
+  title?: string;
+  heading?: string;
+  eyebrow?: string;
+  paragraphs: string[];
+  diagram?: string;
+  diagramUrl?: string;
+  code?: string;
+  caption?: string;
+  highlights?: string[];
+}
+
+/** 报告解析后的完整结构（v0.2 双栏阅读器左栏渲染用） */
+export interface ParsedReportContent {
+  title?: string;
+  fileName?: string;
+  blobId?: string;
+  pages: ParsedReportPage[];
+}
+
+/**
+ * 报告批注。
+ *
+ * 直接复用 `AnnotationItem`——`ReportViewer` 的 props 用的就是 `AnnotationItem`，
+ * 之前 `Online.tsx` 引用了一个从未定义过的名字，导致整个模块类型检查失败。
+ */
+export type ReportAnnotation = AnnotationItem;
+
 export interface AnnotationItem {
   id: string;
   rubricId?: string;
