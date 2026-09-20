@@ -28,6 +28,7 @@ import {
 import { registerLearnBuddyRoutes } from "../src/routes/api.js";
 import { StorageService } from "../src/services/storage.js";
 import { buildCorruptPdf, buildMinimalPdf } from "../scripts/lib/doc-fixtures.mjs";
+import { withAuthHeaders, tokenFor } from "./helpers/auth.js";
 
 const PARSE_ERROR_MESSAGE = /文档解析失败 \[malformed\]/;
 
@@ -92,8 +93,8 @@ async function startTestServer(t, store, storage) {
 }
 
 function httpRequest(port, method, reqPath, headers = {}, body = null) {
-  return new Promise((resolve, reject) => {
-    const req = http.request({ hostname: "127.0.0.1", port, path: reqPath, method, headers }, (res) => {
+  return withAuthHeaders(port, headers).then((authHeaders) => new Promise((resolve, reject) => {
+    const req = http.request({ hostname: "127.0.0.1", port, path: reqPath, method, headers: authHeaders }, (res) => {
       const chunks = [];
       res.on("data", (c) => chunks.push(c));
       res.on("end", () =>
@@ -103,7 +104,7 @@ function httpRequest(port, method, reqPath, headers = {}, body = null) {
     req.on("error", reject);
     if (body) req.write(body);
     req.end();
-  });
+  }));
 }
 
 /** 通过真实上传接口上传一个损坏的 PDF（解析必然失败，且不触发任何 LLM 调用） */
@@ -127,9 +128,14 @@ async function uploadBrokenPdf(port, overrides = {}) {
   return JSON.parse(res.text);
 }
 
-/** 通过列表接口取某用户的课件列表 */
-async function fetchMaterials(port, query) {
-  const res = await httpRequest(port, "GET", `/api/learnbuddy/materials?${query}`);
+/**
+ * 通过列表接口取课件列表。
+ *
+ * 身份绑定后可见范围由令牌决定，`headers` 用于显式切换视角
+ * （例如学生 student.lin）；不传则走 helper 默认的 teacher.chen。
+ */
+async function fetchMaterials(port, query, headers = {}) {
+  const res = await httpRequest(port, "GET", `/api/learnbuddy/materials${query ? `?${query}` : ""}`, headers);
   assert.equal(res.statusCode, 200);
   return JSON.parse(res.text);
 }
@@ -617,7 +623,12 @@ test("(e) 权限过滤不变：学生看不到他人私有课件的解析错误�
     parseError: "文档解析失败 [needsOcr]：第 1 页疑似扫描件，需要 OCR"
   });
 
-  const studentRes = await fetchMaterials(port, "courseId=network&userId=s-yi");
+  // 身份绑定：学生视角必须来自令牌（student.lin → s-yi），query 里的 userId 已不再是身份来源
+  const studentHeaders = {
+    Authorization: `Bearer ${await tokenFor(port, { username: "student.lin", password: "123" })}`
+  };
+
+  const studentRes = await fetchMaterials(port, "courseId=network", studentHeaders);
   const ids = studentRes.materials.map((m) => m.id);
 
   assert.ok(!ids.includes("mat-private-failed"), "学生的列表里不得出现教师私有课件");
@@ -626,7 +637,7 @@ test("(e) 权限过滤不变：学生看不到他人私有课件的解析错误�
 
   // 整个响应体里不得出现任何越权错误信息（包含无 courseId 的全量视图）
   assert.ok(!studentRes.materials.some((m) => m.parseError === secretError || /8F3A/.test(m.parseError || "")));
-  const allCoursesRes = await fetchMaterials(port, "userId=s-yi");
+  const allCoursesRes = await fetchMaterials(port, "", studentHeaders);
   assert.ok(!/8F3A/.test(allCoursesRes.text), "越权错误信息不得出现在响应体中");
   assert.ok(!/5C21/.test(allCoursesRes.text));
   for (const m of allCoursesRes.materials) {
@@ -637,7 +648,8 @@ test("(e) 权限过滤不变：学生看不到他人私有课件的解析错误�
   }
 
   // 教师本人仍能看到自己私有课件的失败原因（权限过滤没有把功能一起砍掉）
-  const teacherRes = await fetchMaterials(port, "courseId=network&userId=t-chen");
+  // 教师视角用默认令牌（teacher.chen），不再从 query 声明身份。
+  const teacherRes = await fetchMaterials(port, "courseId=network");
   const teacherView = findMaterial(teacherRes.materials, "mat-private-failed");
   assert.equal(teacherView.parseStatus, "failed");
   assert.equal(teacherView.parseError, secretError);

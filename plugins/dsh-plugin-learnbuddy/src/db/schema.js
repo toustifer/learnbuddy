@@ -2,6 +2,16 @@
  * LearnBuddy SQLite Database Schema and Seed Data
  * Compatible with Node 22 (node:sqlite DatabaseSync)
  */
+import { hashPassword } from "../services/auth.js";
+
+/**
+ * 演示账号的默认密码。
+ *
+ * 前端登录页与演示账号按钮本来就按 `123` 提交（见 `web/src/App.tsx`），
+ * 之前后端**没有校验密码**，所以这个约定一直没被真正执行过。
+ * 现在后端开始真实校验，种子数据就把这个约定落实成入库的哈希。
+ */
+export const DEMO_PASSWORD = "123";
 
 /**
  * task-15：materials 表的解析错误持久化列。
@@ -17,14 +27,38 @@ export const MATERIAL_PARSE_ERROR_COLUMNS = [
   { name: "parse_error", ddl: "parse_error TEXT" }
 ];
 
+/**
+ * 身份绑定：users 表的凭据列。
+ *
+ * 同样必须走迁移而不是只改建表语句——线上库里已有真实用户记录，
+ * 只改 `CREATE TABLE IF NOT EXISTS` 不会给已存在的表补列。
+ *
+ * 为什么默认空串而不是 NULL：老库里的用户补列后是「无密码」状态，
+ * 空串让 `verifyPassword()` 明确判否，不会因为 null 的宽松判断而放行。
+ */
+export const USER_AUTH_COLUMNS = [
+  { name: "password_hash", ddl: "password_hash TEXT NOT NULL DEFAULT ''" }
+];
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   username TEXT UNIQUE NOT NULL,
   name TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('teacher', 'student')),
-  initials TEXT
+  initials TEXT,
+  password_hash TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions (expires_at);
 
 CREATE TABLE IF NOT EXISTS courses (
   id TEXT PRIMARY KEY,
@@ -495,6 +529,39 @@ export function migrateMaterialsParseErrorColumns(db) {
 }
 
 /**
+ * 身份绑定：给老库的 users 表补凭据列（幂等）。
+ *
+ * @param {import('node:sqlite').DatabaseSync} db
+ */
+export function migrateUserAuthColumns(db) {
+  const table = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'")
+    .get();
+  if (!table) {
+    return { migrated: false, added: [], existing: [] };
+  }
+
+  const existing = db
+    .prepare("PRAGMA table_info(users)")
+    .all()
+    .map((row) => row.name);
+
+  const added = [];
+  for (const column of USER_AUTH_COLUMNS) {
+    if (existing.includes(column.name)) continue;
+    try {
+      db.exec(`ALTER TABLE users ADD COLUMN ${column.ddl}`);
+    } catch (err) {
+      // 并发启动时后到者可能撞上 "duplicate column name"，等价于迁移已完成
+      if (!/duplicate column name/i.test(err.message || "")) throw err;
+    }
+    added.push(column.name);
+  }
+
+  return { migrated: added.length > 0, added, existing };
+}
+
+/**
  * Initialize database schema
  * @param {import('node:sqlite').DatabaseSync} db 
  */
@@ -503,6 +570,7 @@ export function initSchema(db) {
   db.exec(SCHEMA_SQL);
   // 老库增量迁移：CREATE TABLE IF NOT EXISTS 不会给已存在的表补列
   migrateMaterialsParseErrorColumns(db);
+  migrateUserAuthColumns(db);
 }
 
 /**
@@ -519,12 +587,24 @@ export function seedDatabase(db, seedData = {}) {
   const submissions = seedData.submissions || DEFAULT_SUBMISSIONS;
 
   // Insert users
+  //
+  // 身份绑定：密码只存哈希，且**保留已有密码**。
+  // `INSERT OR REPLACE` 是「先删后插」，若每次都重写演示密码，
+  // 谁改过密码、一重启就被打回默认值——那等于密码形同虚设。
+  const existingCredentials = new Map(
+    db
+      .prepare("SELECT id, password_hash FROM users")
+      .all()
+      .map((row) => [row.id, row.password_hash || ""])
+  );
   const insertUser = db.prepare(`
-    INSERT OR REPLACE INTO users (id, username, name, role, initials)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO users (id, username, name, role, initials, password_hash)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
   for (const u of users) {
-    insertUser.run(u.id, u.username, u.name, u.role, u.initials || u.name.slice(0, 1));
+    const carried = existingCredentials.get(u.id) || "";
+    const passwordHash = carried || hashPassword(u.password || DEMO_PASSWORD);
+    insertUser.run(u.id, u.username, u.name, u.role, u.initials || u.name.slice(0, 1), passwordHash);
   }
 
   // Insert courses

@@ -45,7 +45,7 @@ export function ApiAssistant({
     setPending(true);
     setError("");
     try {
-      const result = await ask(question, material, user!, active.signal);
+      const result = await ask(question, material, active.signal);
       if (active.signal.aborted) return;
       if (!result.answer?.trim()) throw new Error("服务未返回回答，请重试。");
       setMessages((previous) => [

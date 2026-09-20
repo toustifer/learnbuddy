@@ -29,6 +29,7 @@ import {
   describeReasoningTruncation
 } from "../src/services/llm.js";
 
+import { withAuthHeaders } from "./helpers/auth.js";
 import {
   MAX_TOKENS_TEXT,
   MAX_TOKENS_VISION,
@@ -486,7 +487,9 @@ async function startApiServer({ llmClient }) {
 
 /** 极简 POST JSON 请求（复用 material-context.test.js 的契约：返回 statusCode + body Buffer） */
 function postJson(port, path, payload) {
-  return new Promise((resolve, reject) => {
+  // 身份绑定后这些端点要求令牌，统一在这里补上
+  return withAuthHeaders(port, { "Content-Type": "application/json" }).then((headers) =>
+    new Promise((resolve, reject) => {
     const data = JSON.stringify(payload);
     const req = http.request(
       {
@@ -494,7 +497,7 @@ function postJson(port, path, payload) {
         port,
         path,
         method: "POST",
-        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) }
+        headers: { ...headers, "Content-Length": Buffer.byteLength(data) }
       },
       (res) => {
         const chunks = [];
@@ -505,7 +508,7 @@ function postJson(port, path, payload) {
     req.on("error", reject);
     req.write(data);
     req.end();
-  });
+  }));
 }
 
 test("【路由防护】POST /qa/ask：模型返回空 content（截断）→ answer 不得为空，回退兜底答案并标记 fallback", async () => {

@@ -36,6 +36,7 @@ import {
   parseKeywords
 } from "../src/services/material-context.js";
 import { registerLearnBuddyRoutes } from "../src/routes/api.js";
+import { withAuthHeaders } from "./helpers/auth.js";
 
 // ==========================================
 // 1. 分词与关键字解析基础工具验证
@@ -315,14 +316,14 @@ test("MaterialContext - buildQAPromptContext 包含图表引用与教师答疑�
 // ==========================================
 
 function makeHttpRequest(port, method, path, headers = {}, body = null) {
-  return new Promise((resolve, reject) => {
+  return withAuthHeaders(port, headers).then((authHeaders) => new Promise((resolve, reject) => {
     const req = http.request(
       {
         hostname: "127.0.0.1",
         port,
         path,
         method,
-        headers
+        headers: authHeaders,
       },
       (res) => {
         const chunks = [];
@@ -341,7 +342,7 @@ function makeHttpRequest(port, method, path, headers = {}, body = null) {
       req.write(typeof body === "string" ? body : JSON.stringify(body));
     }
     req.end();
-  });
+  }));
 }
 
 test("HTTP API - GET /materials/:id/context & POST /qa/cards/search & POST /qa/ask", async () => {

@@ -404,7 +404,7 @@ export function MaterialWorkspace({ id }: { id: string }) {
     setContextLoading(true);
     setContextError("");
     setContext(null);
-    void getMaterialContext(id, user.id, controller.signal)
+    void getMaterialContext(id, controller.signal)
       .then((value) => {
         if (controller.signal.aborted) return;
         setContext(value);

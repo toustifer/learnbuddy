@@ -38,6 +38,7 @@ import {
   DEFAULT_MAX_CONTEXT_LENGTH
 } from "../src/services/dsh-context-bridge.js";
 import { registerLearnBuddyRoutes } from "../src/routes/api.js";
+import { withAuthHeaders } from "./helpers/auth.js";
 
 // ==========================================
 // 1. formatQuoteEvidence 证据格式化测试
@@ -210,14 +211,14 @@ test("DSH Bridge - buildDshSessionPrompt 组装完整 System Prompt", () => {
 // 5. HTTP 端点集成测试 (/dsh/session-context, /dsh/quote, /dsh/message)
 // ==========================================
 function makeHttpRequest(port, method, path, headers = {}, body = null) {
-  return new Promise((resolve, reject) => {
+  return withAuthHeaders(port, headers).then((authHeaders) => new Promise((resolve, reject) => {
     const req = http.request(
       {
         hostname: "127.0.0.1",
         port,
         path,
         method,
-        headers
+        headers: authHeaders,
       },
       (res) => {
         const chunks = [];
@@ -236,7 +237,7 @@ function makeHttpRequest(port, method, path, headers = {}, body = null) {
       req.write(typeof body === "string" ? body : JSON.stringify(body));
     }
     req.end();
-  });
+  }));
 }
 
 test("HTTP API - POST /dsh/session-context & /dsh/quote & /dsh/message 全链路", async () => {

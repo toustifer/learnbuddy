@@ -7,6 +7,7 @@ import {
   loginAccount,
   parseErrorText,
   request,
+  setAccessToken,
   uploadMaterial,
 } from "./api";
 import { freshState, users } from "./seed";
@@ -15,27 +16,68 @@ import { validateServerGrades } from "./pages/Online";
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  // 令牌是模块级状态，用例之间必须清掉，否则会互相污染
+  setAccessToken("");
 });
 function response(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status });
 }
-describe("server data boundaries", () => {
-  it("requires a viewer for every material list and detail request", async () => {
+const bearerOf = (init: RequestInit | undefined) =>
+  new Headers(init?.headers).get("Authorization");
+describe("identity binding", () => {
+  it("never puts the viewer id in the URL — identity comes from the token only", async () => {
     const fetcher = vi
       .fn()
       .mockResolvedValue(response({ ok: true, materials: [] }));
     vi.stubGlobal("fetch", fetcher);
-    await expect(listMaterials("")).rejects.toThrow("登录");
-    await expect(getMaterialContext("mat-private", "")).rejects.toThrow("登录");
-    expect(fetcher).not.toHaveBeenCalled();
-    await listMaterials("s-yi");
-    expect(String(fetcher.mock.calls[0][0])).toContain("userId=s-yi");
-    fetcher.mockResolvedValueOnce(
-      response({ ok: true, context: { sections: [] } }),
+    await listMaterials();
+    expect(String(fetcher.mock.calls[0][0])).not.toContain("userId");
+    // 未登录时不带 Authorization，交由服务端返回 401
+    expect(bearerOf(fetcher.mock.calls[0][1])).toBeNull();
+  });
+  it("attaches the bearer token to every request after login", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({
+          ok: true,
+          token: "tk-1",
+          user: {
+            id: "t-chen",
+            role: "teacher",
+            name: "陈知行",
+            username: "teacher.chen",
+            courses: [],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(response({ ok: true, materials: [] }));
+    vi.stubGlobal("fetch", fetcher);
+    await loginAccount("teacher.chen", "123");
+    expect(String(fetcher.mock.calls[0][0])).toContain("/auth/login");
+
+    await listMaterials();
+    expect(bearerOf(fetcher.mock.calls[1][1])).toBe("Bearer tk-1");
+    expect(String(fetcher.mock.calls[1][0])).not.toContain("userId");
+  });
+  it("refuses a login response without a token instead of acting logged in", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        response({
+          ok: true,
+          user: {
+            id: "t-chen",
+            role: "teacher",
+            name: "陈知行",
+            username: "teacher.chen",
+            courses: [],
+          },
+        }),
+      ),
     );
-    await getMaterialContext("a/b", "t-chen");
-    expect(String(fetcher.mock.calls[1][0])).toContain(
-      "a%2Fb/context?userId=t-chen",
+    await expect(loginAccount("teacher.chen", "123")).rejects.toBeInstanceOf(
+      ApiError,
     );
   });
   it("does not recover an API error using invented materials or login identity", async () => {
@@ -45,7 +87,7 @@ describe("server data boundaries", () => {
         .fn()
         .mockResolvedValue(response({ ok: false, error: "访问被拒绝" }, 403)),
     );
-    await expect(listMaterials("s-yi")).rejects.toThrow("访问被拒绝");
+    await expect(listMaterials()).rejects.toThrow("访问被拒绝");
     await expect(loginAccount("teacher.chen", "123")).rejects.toBeInstanceOf(
       ApiError,
     );
@@ -58,6 +100,7 @@ describe("server data boundaries", () => {
         .mockResolvedValue(
           response({
             ok: true,
+            token: "tk-demo",
             user: {
               id: "user-demo",
               role: "teacher",
@@ -77,11 +120,12 @@ describe("server data boundaries", () => {
   it("loads actual courses when the existing server login does not include them", async () => {
     const course = { id: "new-course", title: "服务器新增课程", teacherId: "t-new", code: "NEW", color: "green", description: "" };
     const fetcher = vi.fn()
-      .mockResolvedValueOnce(response({ ok: true, user: { id: "s-new", role: "student", name: "新学生", username: "new" } }))
+      .mockResolvedValueOnce(response({ ok: true, token: "tk-new", user: { id: "s-new", role: "student", name: "新学生", username: "new" } }))
       .mockResolvedValueOnce(response({ ok: true, courses: [course] }));
     vi.stubGlobal("fetch", fetcher);
     expect((await loginAccount("new", "123")).courses).toEqual([course]);
-    expect(String(fetcher.mock.calls[1][0])).toContain("/workspace?userId=s-new");
+    expect(String(fetcher.mock.calls[1][0])).toContain("/workspace");
+    expect(String(fetcher.mock.calls[1][0])).not.toContain("userId");
   });
   it("rejects HTML errors and malformed successful list payloads", async () => {
     const fetcher = vi
@@ -90,7 +134,16 @@ describe("server data boundaries", () => {
       .mockResolvedValueOnce(response({ ok: true }));
     vi.stubGlobal("fetch", fetcher);
     await expect(request("/missing")).rejects.toThrow("HTTP 404");
-    await expect(listMaterials("s-yi")).rejects.toThrow("有效的资料列表");
+    await expect(listMaterials()).rejects.toThrow("有效的资料列表");
+  });
+  it("requests material context without a viewer id", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValue(response({ ok: true, context: { sections: [] } }));
+    vi.stubGlobal("fetch", fetcher);
+    await getMaterialContext("a/b");
+    expect(String(fetcher.mock.calls[0][0])).toContain("a%2Fb/context");
+    expect(String(fetcher.mock.calls[0][0])).not.toContain("userId");
   });
   it("preserves parse failure even when upload succeeded and forces student visibility to private", async () => {
     const material = freshState().materials[0];
@@ -113,7 +166,8 @@ describe("server data boundaries", () => {
     );
     const form = fetcher.mock.calls[0][1].body as FormData;
     expect(form.get("visibility")).toBe("private");
-    expect(form.get("ownerId")).toBe("s-yi");
+    // 归属由服务端从令牌取，前端不再声明 ownerId
+    expect(form.get("ownerId")).toBeNull();
     expect(
       new Headers(fetcher.mock.calls[0][1].headers).has("Content-Type"),
     ).toBe(false);

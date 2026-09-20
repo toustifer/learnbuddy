@@ -30,6 +30,7 @@ import {
 } from "../src/services/storage.js";
 import { DatabaseStore } from "../src/db/store.js";
 import { registerLearnBuddyRoutes } from "../src/routes/api.js";
+import { withAuthHeaders } from "./helpers/auth.js";
 
 function createTempDir(prefix = "learnbuddy-test-storage-") {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -215,14 +216,14 @@ test("StorageService - Stream 流式保存与文件物理删除 (deleteFile)", a
 // ==========================================
 
 function makeHttpRequest(port, method, path, headers = {}, body = null) {
-  return new Promise((resolve, reject) => {
+  return withAuthHeaders(port, headers).then((authHeaders) => new Promise((resolve, reject) => {
     const req = http.request(
       {
         hostname: "127.0.0.1",
         port,
         path,
         method,
-        headers
+        headers: authHeaders,
       },
       (res) => {
         const chunks = [];
@@ -245,7 +246,7 @@ function makeHttpRequest(port, method, path, headers = {}, body = null) {
       }
     }
     req.end();
-  });
+  }));
 }
 
 test("HTTP 路由 - 文件物理上传、在线预览与附件下载完整链路", async () => {

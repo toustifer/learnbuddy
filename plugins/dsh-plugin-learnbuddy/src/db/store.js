@@ -12,6 +12,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import { initSchema, seedDatabase } from "./schema.js";
+import { hashPassword, issueToken, sessionExpiry } from "../services/auth.js";
 
 /**
  * Row Mappers
@@ -162,6 +163,83 @@ export class DatabaseStore {
     const stmt = this.db.prepare("SELECT * FROM users WHERE username = ?");
     const row = stmt.get(username);
     return mapUser(row);
+  }
+
+  /**
+   * 取登录凭据（含密码哈希），**仅供登录校验内部使用**。
+   *
+   * 为什么不给 `getUser()` 加字段：`mapUser()` 决定了对外的用户形状，
+   * 那些形状会进 API 响应。密码哈希绝不能跟着它出现在任何响应里。
+   *
+   * @param {string} username
+   * @returns {{user: object, passwordHash: string}|null}
+   */
+  getCredentialByUsername(username) {
+    const row = this.db.prepare("SELECT * FROM users WHERE username = ?").get(username);
+    if (!row) return null;
+    return { user: mapUser(row), passwordHash: row.password_hash || "" };
+  }
+
+  /**
+   * 设置密码。入参是明文，内部完成哈希，调用方不接触哈希串。
+   * @param {string} userId
+   * @param {string} password 明文密码
+   */
+  setUserPassword(userId, password) {
+    this.db
+      .prepare("UPDATE users SET password_hash = ? WHERE id = ?")
+      .run(hashPassword(password), userId);
+    return this.getUser(userId);
+  }
+
+  /**
+   * 登录成功：签发并落库一个会话令牌。
+   *
+   * 令牌由服务端随机生成，`auth.js` 侧校验时也只认库里的记录，
+   * 因此调用方无法靠任何入参把身份"说"成别人。
+   *
+   * @param {string} userId
+   * @returns {{token: string, expiresAt: string}}
+   */
+  createSession(userId) {
+    const token = issueToken();
+    const expiresAt = sessionExpiry();
+    this.db
+      .prepare(
+        "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)"
+      )
+      .run(token, userId, new Date().toISOString(), expiresAt);
+    return { token, expiresAt };
+  }
+
+  /**
+   * 用令牌换回身份。令牌不存在或已过期一律返回 null（过期时顺手删除该记录）。
+   *
+   * @param {string} token
+   * @returns {object|null} 用户对象
+   */
+  getSessionActor(token) {
+    if (typeof token !== "string" || !token.trim()) return null;
+    const row = this.db.prepare("SELECT * FROM sessions WHERE token = ?").get(token.trim());
+    if (!row) return null;
+    if (row.expires_at <= new Date().toISOString()) {
+      this.deleteSession(row.token);
+      return null;
+    }
+    return this.getUser(row.user_id);
+  }
+
+  /** 退出登录：作废该令牌。 */
+  deleteSession(token) {
+    this.db.prepare("DELETE FROM sessions WHERE token = ?").run(String(token || ""));
+  }
+
+  /** 清理已过期会话，返回清理条数。 */
+  pruneExpiredSessions() {
+    const info = this.db
+      .prepare("DELETE FROM sessions WHERE expires_at <= ?")
+      .run(new Date().toISOString());
+    return Number(info.changes || 0);
   }
 
   listUsers() {

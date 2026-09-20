@@ -41,7 +41,7 @@ function TeacherAssignment({ assignment }: { assignment?: Assignment }) {
     setSaving(true); setError("");
     try {
       const result = await request<{ assignment: Assignment }>(assignment ? `/assignments/${encodeURIComponent(assignment.id)}` : "/assignments", {
-        method: assignment ? "PUT" : "POST", body: JSON.stringify({ userId: user!.id, courseId: course, title, due, description, rubric, materialIds, confirmed, published }),
+        method: assignment ? "PUT" : "POST", body: JSON.stringify({ courseId: course, title, due, description, rubric, materialIds, confirmed, published }),
       });
       await refreshAcademic();
       setPublishConfirm(false);
