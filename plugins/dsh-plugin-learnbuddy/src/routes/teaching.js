@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { resolveActorFromRequest } from "../services/auth.js";
+import { projectSubmissions } from "../contracts/projection.js";
 
 function fail(status, message) {
   throw Object.assign(new Error(message), { status });
@@ -10,14 +11,13 @@ export function buildWorkspace(store, userId) {
   if (!user) fail(401, "请先登录。");
   const courses = store.getUserCourses(user.id);
   const assignments = store.getAssignments(user.id);
-  const submissions = assignments.flatMap((a) => store.getSubmissions(user.id, a.id))
-    .map((s) => {
-      if (user.role === "teacher") return s;
-      // Never expose unpublished grades through a history or error field.
-      return { ...s, history: [], failure: undefined,
-        grades: s.status === "published" ? s.grades : [],
-        summary: s.status === "published" ? s.summary : "" };
-    });
+  // 字段裁剪一律交给投影契约（见 src/contracts/projection.js）。
+  // 此前这里是**第三处**手写投影，而且比 store 里那两处多清了 history ——
+  // 三处规则不一致，正是投影必须收敛到一处的理由。
+  const submissions = projectSubmissions(
+    assignments.flatMap((a) => store.getSubmissions(user.id, a.id)),
+    user
+  );
   const roster = user.role === "teacher"
     ? courses.flatMap((c) => store.listUsers()
       .filter((u) => u.role === "student" && store.isEnrolled(c.id, u.id))
