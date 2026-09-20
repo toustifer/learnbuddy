@@ -120,7 +120,9 @@ function mapSubmission(row) {
     grades: row.grades ? JSON.parse(row.grades) : [],
     summary: row.summary || "",
     history: row.history ? JSON.parse(row.history) : [],
-    failure: row.failure ?? null
+    failure: row.failure ?? null,
+    // 解析产物持久化：刷新页面后教师仍能看到报告，不必重新评分
+    parsedContent: row.parsed_content ? JSON.parse(row.parsed_content) : null
   };
 }
 
@@ -680,7 +682,8 @@ export class DatabaseStore {
         grades = ?,
         summary = ?,
         history = ?,
-        failure = ?
+        failure = ?,
+        parsed_content = ?
       WHERE id = ?
     `);
     stmt.run(
@@ -695,6 +698,7 @@ export class DatabaseStore {
       merged.summary || "",
       JSON.stringify(merged.history || []),
       merged.failure || null,
+      merged.parsedContent ? JSON.stringify(merged.parsedContent) : null,
       id
     );
     return this.getSubmission(id);

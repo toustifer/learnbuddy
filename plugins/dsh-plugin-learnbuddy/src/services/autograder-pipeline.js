@@ -19,7 +19,7 @@
 
 import { MultimodalLLMClient } from "./llm.js";
 import { AutoGraderEngine } from "./grader.js";
-import { parseMaterial } from "./material-parser.js";
+import { MaterialParserService } from "./material-parser.js";
 
 /**
  * 标杆计算机网络实验评分表（Wireshark 协议分析与三次握手）
@@ -125,98 +125,253 @@ export const SAMPLE_STUDENT_REPORTS = {
   }
 };
 
-/**
- * 校验并提取学生报告正文与多模态证据
- */
-export function extractReportContent(submission, storage = null) {
-  if (!submission) return null;
+/** 解析失败时统一返回的显式失败对象（正文恒为空，绝不生成替代正文） */
+function parseFailedReport(submission, error, errorCode = "PARSE_FAILED") {
+  return {
+    status: "failed",
+    source: "document",
+    errorCode,
+    error,
+    title: submission?.fileName || "学生提交实验报告",
+    content: "",
+    pages: 0,
+    pagesEstimated: false,
+    diagrams: [],
+    images: [],
+    hasImages: false,
+    structuredPages: null
+  };
+}
 
-  // 1. 优先根据 sampleKey 匹配高质量内置报告样例
-  if (submission.sampleKey && SAMPLE_STUDENT_REPORTS[submission.sampleKey]) {
-    const sample = SAMPLE_STUDENT_REPORTS[submission.sampleKey];
-    return {
-      title: submission.fileName || sample.title,
-      content: sample.text,
-      pages: sample.pages || 3,
-      diagrams: sample.diagrams || [],
-      hasImages: Boolean(sample.diagrams && sample.diagrams.length > 0)
-    };
+/** 文档没有标题结构时，每页大约容纳的段落数（估算用，不冒充真实页码） */
+const PARAGRAPHS_PER_ESTIMATED_PAGE = 12;
+
+/**
+ * 把真实解析出的 Markdown 正文切成可渲染的页面结构。
+ *
+ * 只用**文档自身的标题**作为章节名，不写死「第 N 部分」这类占位标题；
+ * 没有标题时整篇作为一页，标题留空、由前端显示文件名。
+ */
+function buildStructuredPages(markdown) {
+  const lines = String(markdown || "").split(/\r?\n/);
+  const sections = [];
+  let current = null;
+  for (const line of lines) {
+    const heading = line.match(/^\s{0,3}(#{1,3})\s+(.+?)\s*$/);
+    if (heading) {
+      current = { heading: heading[2].trim(), paragraphs: [] };
+      sections.push(current);
+      continue;
+    }
+    if (!current) {
+      current = { heading: "", paragraphs: [] };
+      sections.push(current);
+    }
+    const text = line.trim();
+    if (text) current.paragraphs.push(text);
+  }
+  const meaningful = sections.filter((s) => s.heading || s.paragraphs.length > 0);
+
+  // 文档自带标题结构：按标题分节，标题就是真实章节名
+  if (meaningful.some((s) => s.heading)) {
+    return meaningful.map((section, index) => ({
+      pageNumber: index + 1,
+      heading: section.heading,
+      paragraphs: section.paragraphs
+    }));
   }
 
-  // 2. 结合物理存储 StorageService 与真实多模态解析提取报告
-  if (submission.blobId && storage) {
+  // 完全没有标题（anydoc 对 DOCX 常只给纯段落）：按段落数估算分页，
+  // 保留阅读器的翻页体验。页数属估算值，由 pagesEstimated 显式标记，不冒充真实页码。
+  const paragraphs = meaningful.flatMap((s) => s.paragraphs);
+  if (paragraphs.length === 0) {
+    return [{ pageNumber: 1, heading: "", paragraphs: [] }];
+  }
+  const pages = [];
+  for (let i = 0; i < paragraphs.length; i += PARAGRAPHS_PER_ESTIMATED_PAGE) {
+    pages.push({
+      pageNumber: pages.length + 1,
+      heading: "",
+      paragraphs: paragraphs.slice(i, i + PARAGRAPHS_PER_ESTIMATED_PAGE)
+    });
+  }
+  return pages;
+}
+
+/** 内嵌图片可落盘的 MIME → 扩展名（与 storage 的 ALLOWED_EXTENSIONS 白名单保持一致） */
+const IMAGE_EXT_BY_MIME = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg"
+};
+
+/**
+ * 把解析出的内嵌图片落盘为可访问资源。
+ *
+ * 纪律：单张失败不牵连整条链路 —— 正文与评分照常进行，
+ * 但原因必须如实记入 warnings，既不能静默吞掉，也不能用占位图冒充真图。
+ * 落盘走内容寻址（fileId = hash + ext），同一张图重复提交不会重复占用磁盘。
+ */
+async function persistReportImages(rawImages, storage, submission) {
+  const list = Array.isArray(rawImages) ? rawImages : [];
+  const images = [];
+  const imageWarnings = [];
+
+  if (list.length === 0) return { images, imageWarnings };
+
+  if (typeof storage?.saveFile !== "function") {
+    imageWarnings.push(`本次解析得到 ${list.length} 张内嵌图片，但存储服务不支持落盘，图片未保存。`);
+    return { images, imageWarnings };
+  }
+
+  for (const [index, asset] of list.entries()) {
+    const mimeType = String(asset?.mimeType || "");
+    const ext = IMAGE_EXT_BY_MIME[mimeType];
+    if (!ext || !asset?.data) {
+      imageWarnings.push(`第 ${index + 1} 张内嵌图片格式为 ${mimeType || "未知"}，不在存储白名单内，未落盘。`);
+      continue;
+    }
     try {
-      const fileInfo = storage.getFile(submission.blobId);
-      if (fileInfo && fileInfo.path) {
-        let parsedRealDoc = null;
-        try {
-          parsedRealDoc = parseMaterial(fileInfo.path, {
-            mimeType: fileInfo.mimeType,
-            filename: fileInfo.originalName
-          });
-        } catch {
-          // 若真实解析异常则继续降级读取元数据
-        }
-
-        if (parsedRealDoc && parsedRealDoc.content) {
-          const rawText = parsedRealDoc.content;
-          // 按分页或段落估算页码与多模态结构
-          const pageChunks = rawText.split(/(?:(?:\r?\n){3,}|(?=【第\s*\d+\s*页】))/).filter(Boolean);
-          const pagesCount = Math.max(1, pageChunks.length);
-          const structuredPages = pageChunks.map((chunk, idx) => ({
-            pageNumber: idx + 1,
-            title: `第 ${idx + 1} 部分`,
-            paragraphs: chunk.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
-          }));
-
-          return {
-            title: submission.fileName || fileInfo.originalName || "学生提交实验报告",
-            content: rawText,
-            pages: pagesCount,
-            diagrams: [
-              {
-                page: Math.min(2, pagesCount),
-                caption: "报告附图: 实验操作运行截图与关键数据证据",
-                evidence: "已从原件提取实验操作过程截图与数据记录。"
-              }
-            ],
-            structuredPages,
-            hasImages: true
-          };
-        }
-
-        return {
-          title: submission.fileName || fileInfo.originalName || "学生提交实验报告",
-          content: `学生实验报告（文件名：${fileInfo.originalName}，文件大小：${fileInfo.size} 字节，格式：${fileInfo.mimeType}）。已提取报告中包含的实验拓扑环境、关键步骤操作日志与抓包数据证据。`,
-          pages: 3,
-          diagrams: [
-            {
-              page: 2,
-              caption: "报告附图: 实验操作运行截图与关键数据证据",
-              evidence: "原件包含实验操作过程及抓包截图证据。"
-            }
-          ],
-          hasImages: true
-        };
-      }
-    } catch {
-      // 忽略物理读取异常，回退默认
+      const saved = await storage.saveFile(asset.data, `report-image-${index + 1}${ext}`, {
+        role: "report-image",
+        sourceBlobId: submission?.blobId || null
+      });
+      images.push({
+        index: index + 1,
+        fileId: saved.fileId,
+        mimeType: saved.mimeType || mimeType,
+        size: saved.size,
+        viewUrl: `/api/learnbuddy/files/${saved.fileId}/view`
+      });
+    } catch (err) {
+      imageWarnings.push(`第 ${index + 1} 张内嵌图片落盘失败：${err.message}`);
     }
   }
 
-  // 3. 通用兜底解构
+  return { images, imageWarnings };
+}
+
+/**
+ * 校验并提取学生报告正文与多模态证据。
+ *
+ * 契约（复用课件解析的同一条纪律，返工单 P1-4「不许生成看起来正常的假内容」）：
+ *   1. `content` 只来自真实解析产物，任何情况下都不生成替代正文；
+ *   2. 解析失败返回 `status:"failed"` + `errorCode:"PARSE_FAILED"`，
+ *      由调用方决定如何呈现，绝不拿假正文继续评分；
+ *   3. `source` 如实标记来源：`document` = 真实解析，`fixture` = 内置演示样例，
+ *      按 04 §5，fixture 结果不得混入正式评分与统计；
+ *   4. 不硬编码 `hasImages` 与图注，图片数量取真实解析统计；
+ *   5. `pages` 由标题结构估算，用 `pagesEstimated` 显式标记，不冒充真实页码。
+ *
+ * @returns {Promise<object|null>} 未提供提交记录时返回 null
+ */
+export async function extractReportContent(submission, storage = null, options = {}) {
+  if (!submission) return null;
+
+  // 1. 内置演示样例：来源如实标记为 fixture
+  if (submission.sampleKey && SAMPLE_STUDENT_REPORTS[submission.sampleKey]) {
+    const sample = SAMPLE_STUDENT_REPORTS[submission.sampleKey];
+    return {
+      status: "parsed",
+      source: "fixture",
+      title: submission.fileName || sample.title,
+      content: sample.text,
+      pages: sample.pages || 3,
+      pagesEstimated: false,
+      diagrams: sample.diagrams || [],
+      images: [],
+      hasImages: Boolean(sample.diagrams && sample.diagrams.length > 0),
+      // 样例也切成可渲染结构便于演示；但 source=fixture 已如实标记来源，
+      // 按 04 §5 不得混入正式评分与统计
+      structuredPages: buildStructuredPages(sample.text)
+    };
+  }
+
+  // 2. 没有可解析的原件：显式失败，不再编造一份报告
+  if (!submission.blobId || !storage) {
+    return parseFailedReport(submission, "该提交没有可解析的原件（缺少 blobId 或存储服务不可用）。");
+  }
+
+  let fileInfo = null;
+  try {
+    // 真实 StorageService 提供的是 getFileMetadata/getFilePath，且路径字段名是 filePath；
+    // 早期假实现用过 getFile/path。两者都兼容，避免再踩「方法不存在」导致解析静默失败。
+    fileInfo =
+      (typeof storage.getFile === "function" ? storage.getFile(submission.blobId) : null) ||
+      (typeof storage.getFileMetadata === "function" ? storage.getFileMetadata(submission.blobId) : null);
+  } catch (err) {
+    return parseFailedReport(submission, `读取原件元数据失败：${err.message}`, "NOT_FOUND");
+  }
+
+  const filePath = fileInfo?.filePath || fileInfo?.path || null;
+  if (!filePath) {
+    return parseFailedReport(submission, "原件元数据缺失（查不到物理路径），无法解析报告。", "NOT_FOUND");
+  }
+
+  // 3. 真实解析：复用课件解析的同一契约（parseDocument 不调用 LLM）
+  const parser = options.parser || new MaterialParserService(options.llmClient);
+  let parsed;
+  try {
+    parsed = await parser.parseDocument(filePath, fileInfo.originalName || submission.fileName);
+  } catch (err) {
+    return parseFailedReport(submission, `解析报告时发生异常：${err.message}`);
+  }
+
+  const text = String(parsed?.markdown || "");
+  // 只有 failed 才算失败；partial（正文拿到了、但内容有缺失）继续走评分并如实带上告警
+  if (parsed?.status === "failed" || !text.trim()) {
+    return parseFailedReport(
+      submission,
+      parsed?.error || "报告解析未产出任何正文内容。",
+      parsed?.errorCode || "PARSE_FAILED"
+    );
+  }
+
+  // 内嵌图片落盘为可访问资源；失败或格式不支持的单张如实记入 warnings，
+  // 不影响正文与评分（不因为取不到图就判定学生没做实验）
+  const { images, imageWarnings } = await persistReportImages(parsed.images, storage, submission);
+
+  const structuredPages = buildStructuredPages(text);
+
   return {
-    title: submission.fileName || "学生提交实验报告",
-    content: `学生实验报告（文件名：${submission.fileName || "report.pdf"}）。实验步骤完整，包含了实验拓扑环境说明、操作步骤与数据分析，附带相关实验证据截图，并给出了异常分析与总结。`,
-    pages: 3,
-    diagrams: [
-      {
-        page: 2,
-        caption: "报告附图: 实验结果截图与关键数据标注",
-        evidence: "已核验第 2 页报告截图与实验数据。"
-      }
-    ],
-    hasImages: true
+    // partial 表示正文拿到了但内容有缺失（内嵌资产被跳过等），如实向上传递
+    status: parsed.status === "partial" ? "partial" : "parsed",
+    source: "document",
+    title: submission.fileName || parsed.title,
+    content: text,
+    // 页数以实际渲染出的页面结构为准，避免「总页数」与阅读器里的页数对不上
+    pages: structuredPages.length,
+    pagesEstimated: parsed.pagesEstimated === true,
+    // 只有真实落盘成功的图片才会出现在这里，不再凭空生成图注与「已提取截图」结论
+    images,
+    imageWarnings,
+    // 解析过程中的降级/缺失告警（与图片告警分开保留，便于前端分组展示）
+    warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
+    diagrams: [],
+    hasImages: images.length > 0,
+    embedded: parsed.embedded,
+    structuredPages
+  };
+}
+
+/**
+ * 解析产物在评阅记录里的投影（阅读器消费的形状）。
+ * 抽成函数是为了「评分前先落库」与「评分成功后写入」两处共用同一套字段。
+ */
+function buildParsedContent(report) {
+  if (!report?.structuredPages) return null;
+  return {
+    title: report.title,
+    pages: report.pages,
+    pagesEstimated: report.pagesEstimated === true,
+    source: report.source,
+    hasImages: report.hasImages === true,
+    // 真实落盘的图片引用 + 未能落盘的原因，供阅读器渲染与如实告知
+    images: Array.isArray(report.images) ? report.images : [],
+    imageWarnings: Array.isArray(report.imageWarnings) ? report.imageWarnings : [],
+    warnings: Array.isArray(report.warnings) ? report.warnings : [],
+    // 解析完整性：partial 表示正文拿到了但有内容缺失，前端应如实提示
+    completeness: report.status === "partial" ? "partial" : "complete",
+    structuredPages: report.structuredPages
   };
 }
 
@@ -390,8 +545,23 @@ export class AutoGraderPipelineService {
         criterion: r.criterion || r.criteria || "符合实验规范要求。"
       }));
 
-      // 4. 提取或解构学生报告正文与图文证据
-      const report = extractReportContent(submission, this.storage);
+      // 4. 提取或解构学生报告正文与图文证据（真实解析，契约见 extractReportContent）
+      const report = await extractReportContent(submission, this.storage);
+
+      // 4.1 解析失败必须显式失败：绝不拿替代正文继续评分（返工单 P1-4）
+      if (report?.status === "failed") {
+        const error = new Error(`${report.errorCode || "PARSE_FAILED"}：${report.error || "报告解析失败。"}`);
+        error.errorCode = report.errorCode || "PARSE_FAILED";
+        throw error;
+      }
+
+      // 4.2 解析产物先落库：即使随后模型不可用导致评分失败，
+      //     教师仍能看到这份报告的真实解析结果。
+      //     （原先 parsedContent 只随成功响应返回一次，刷新即失，模型不可用时更是完全看不到）
+      const parsedContent = buildParsedContent(report);
+      if (parsedContent) {
+        this.store.updateSubmission(submissionId, { parsedContent });
+      }
 
       // 5. 调用大模型/评分引擎执行多模态逐项判定
       const rawEvaluation = await this._evaluateWithLLM(report, normalizedRubric, options);
@@ -407,11 +577,7 @@ export class AutoGraderPipelineService {
         status: "review",
         grades,
         summary,
-        parsedContent: report.structuredPages ? {
-          title: report.title,
-          pages: report.pages,
-          structuredPages: report.structuredPages
-        } : null,
+        parsedContent,
         failure: null
       });
 

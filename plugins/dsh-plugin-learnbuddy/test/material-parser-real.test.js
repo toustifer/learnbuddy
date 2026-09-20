@@ -300,7 +300,12 @@ test("内嵌图片上限保护：超过张数/单张体积的图片被跳过并�
   const parser = makeParser(fake);
   const result = await parser.parseAndExtract(docxPath, "heavy-slides.docx");
 
-  assert.equal(result.status, "parsed", "超限图片只跳过，不应让整条解析失败");
+  // 跳过超出上限的内嵌图 ⇒ 内容不完整 ⇒ partial；但仍不是解析失败
+  assert.equal(result.status, "partial", "超限图片只跳过：内容不完整记为 partial，不判为解析失败");
+  assert.ok(
+    result.warnings.some((w) => w.includes("未能提取")),
+    "被跳过的内嵌资产必须如实上报，不能静默吞掉"
+  );
   assert.equal(result.embeddedImages.total, 6);
   assert.equal(result.embeddedImages.inlined, MAX_EMBEDDED_IMAGES, `最多内联 ${MAX_EMBEDDED_IMAGES} 张`);
   assert.equal(result.embeddedImages.skipped, 6 - MAX_EMBEDDED_IMAGES);
@@ -525,7 +530,12 @@ test("HTTP 上传：真实 DOCX 走真解析；损坏 PDF 明确回传 parseStat
   const port = server.address().port;
 
   // 1) 真实 DOCX（上传白名单内的格式）→ parsed
-  const docxContent = buildDocx({ paragraphs: ["UPLOAD CHAIN REAL DOCX BODY"] });
+  const docxContent = buildDocx({
+    paragraphs: [
+      "UPLOAD CHAIN REAL DOCX BODY",
+      "第二段：用于验证上传链路确实对真实 DOCX 走真解析，并返回可用的知识点。"
+    ]
+  });
   const okRes = await makeHttpRequest(
     port,
     "POST",

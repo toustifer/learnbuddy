@@ -11,6 +11,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+dist-*
 *.local
 
 # Environment variables
@@ -34,3 +35,13 @@ Thumbs.db
 
 # LearnBuddy 运行时数据（SQLite 数据库由服务启动时自动创建，不入库）
 plugins/dsh-plugin-learnbuddy/data/
+
+# 工作区记忆与一次性脚本（agent 本地数据，不是项目产物）
+.learnbuddy/
+**/.tmp-*
+
+# 上传目录：其余都是运行时产物（评阅时落盘的图片、存储索引），
+# 只保留演示用的真实原件 —— 它是 DEFAULT_SUBMISSIONS 里 sub-xu-os 的 blobId 目标，
+# 缺了它「真实解析链路」就跑不起来。由 scripts/make-demo-report.mjs 生成。
+plugins/dsh-plugin-learnbuddy/uploads/*
+!plugins/dsh-plugin-learnbuddy/uploads/e38a62ddd6e08aaa825e3dbb1a125f8ea8d35c7e4973fe6e76209604b05eb6ed.docx

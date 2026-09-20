@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS submissions (
   summary TEXT DEFAULT '',
   history TEXT DEFAULT '[]',
   failure TEXT,
+  parsed_content TEXT,
   FOREIGN KEY (assignment_id) REFERENCES assignments(id),
   FOREIGN KEY (student_id) REFERENCES users(id)
 );
@@ -432,6 +433,23 @@ export const DEFAULT_SUBMISSIONS = [
     history: []
   },
   {
+    // 带真实原件的演示提交：用于验证真实解析链路（阅读器渲染、证据定位、内嵌图片）。
+    // 其余提交走 sampleKey 样例，两类数据并存便于对比。
+    // 选 (lab-db × s-xu) 是因为该组合在种子数据里空闲 —— 不挤占任何现有作业的
+    // 提交数量（lab-os / lab-tcp 的条数都被权限红线测试断言着，动不得）。
+    // 原件由 `node scripts/make-demo-report.mjs` 生成（内容固定 ⇒ blobId 稳定）。
+    id: "sub-xu-db",
+    assignmentId: "lab-db",
+    studentId: "s-xu",
+    fileName: "索引实验报告_许然.docx",
+    submittedAt: "2026-09-11 14:20",
+    status: "submitted",
+    blobId: "e38a62ddd6e08aaa825e3dbb1a125f8ea8d35c7e4973fe6e76209604b05eb6ed.docx",
+    grades: [],
+    summary: "",
+    history: []
+  },
+  {
     id: "sub-zhou-db",
     assignmentId: "lab-db",
     studentId: "s-zhou",
@@ -495,6 +513,40 @@ export function migrateMaterialsParseErrorColumns(db) {
 }
 
 /**
+ * 老库增量迁移：给 submissions 补 parsed_content 列。
+ *
+ * 为什么必须落库：`parsedContent` 原先只随「评阅接口」的响应返回一次，
+ * 刷新页面即丢失；模型不可用（评分失败）时更是完全看不到报告内容。
+ * 解析产物是教师复核的依据，必须持久化，而不是一次性的响应字段。
+ *
+ * 幂等：已有该列直接跳过；并发启动撞上 duplicate column 也视为完成。
+ */
+export function migrateSubmissionParsedContentColumn(db) {
+  const table = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'submissions'")
+    .get();
+  if (!table) {
+    return { migrated: false, added: [], existing: [] };
+  }
+
+  const existing = db
+    .prepare("PRAGMA table_info(submissions)")
+    .all()
+    .map((row) => row.name);
+
+  if (existing.includes("parsed_content")) {
+    return { migrated: false, added: [], existing };
+  }
+
+  try {
+    db.exec("ALTER TABLE submissions ADD COLUMN parsed_content TEXT");
+  } catch (err) {
+    if (!/duplicate column name/i.test(err.message || "")) throw err;
+  }
+  return { migrated: true, added: ["parsed_content"], existing };
+}
+
+/**
  * Initialize database schema
  * @param {import('node:sqlite').DatabaseSync} db 
  */
@@ -503,6 +555,7 @@ export function initSchema(db) {
   db.exec(SCHEMA_SQL);
   // 老库增量迁移：CREATE TABLE IF NOT EXISTS 不会给已存在的表补列
   migrateMaterialsParseErrorColumns(db);
+  migrateSubmissionParsedContentColumn(db);
 }
 
 /**

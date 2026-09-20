@@ -97,6 +97,8 @@ export interface Submission {
   summary: string;
   history: ReviewVersion[];
   failure?: string;
+  /** 持久化的解析产物：有它就能渲染报告，不依赖本次评分是否成功 */
+  parsedContent?: ParsedReportContent | null;
 }
 export interface ChatReference {
   id: string;
@@ -141,6 +143,7 @@ export type Route =
   | { page: "insights"; courseId?: string };
 export interface DocumentPage {
   pageNumber?: number;
+  /** 章节标题取自文档自身结构；解析拿不到时为空串，由前端回退显示文件名 */
   heading: string;
   eyebrow: string;
   paragraphs: string[];
@@ -151,7 +154,37 @@ export interface DocumentPage {
   highlights?: string[];
 }
 
-export interface AnnotationItem {
+/** 报告内嵌图片的可访问引用（后端落盘后返回，前端用 fileUrl(fileId) 取图） */
+export interface ReportImageRef {
+  index: number;
+  fileId: string;
+  mimeType: string;
+  size?: number;
+  viewUrl?: string;
+}
+
+/** 评阅记录里携带的真实解析产物投影（后端 extractReportContent → parsedContent） */
+export interface ParsedReportContent {
+  title: string;
+  pages: number;
+  /** 页数由标题结构估算，仅作参考，不得当作真实页码展示 */
+  pagesEstimated?: boolean;
+  /** document = 真实解析；fixture = 内置演示样例，不得混入正式评分与统计 */
+  source?: "document" | "fixture";
+  hasImages?: boolean;
+  /** 真实落盘的内嵌图片；空数组表示确实没有或未落盘 */
+  images?: ReportImageRef[];
+  /** 未能落盘的原因，如实展示，不用占位图掩盖 */
+  imageWarnings?: string[];
+  /** 解析过程中的降级 / 缺失告警 */
+  warnings?: string[];
+  /** partial 表示正文拿到了、但有内容缺失（不等于解析失败） */
+  completeness?: "complete" | "partial";
+  structuredPages: DocumentPage[];
+}
+
+/** 报告批注（教师在原文上的标注，可关联到某个评分项） */
+export interface ReportAnnotation {
   id: string;
   rubricId?: string;
   page: number;
@@ -173,6 +206,8 @@ export interface ServerGrade {
   comment?: string;
   evidence?: string;
   judgment?: "satisfied" | "partially_satisfied" | "not_satisfied" | "professional_judgment";
+  /** 后端 coverage 以嵌套对象返回，面板消费前需摊平成 coveredPoints/missingPoints */
+  coverage?: { coveredPoints?: string[]; missingPoints?: string[] };
   coveredPoints?: string[];
   missingPoints?: string[];
   attentionLevel?: "clear" | "needs_attention" | "review_required";
@@ -185,6 +220,7 @@ export interface ServerReview {
   grades: ServerGrade[];
   summary: string;
   reviewVersion?: number;
+  parsedContent?: ParsedReportContent | null;
   submission?: {
     assignmentId?: string;
     blobId?: string;
