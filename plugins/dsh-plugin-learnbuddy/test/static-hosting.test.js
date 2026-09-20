@@ -19,6 +19,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { withAuthHeaders } from "./helpers/auth.js";
+
 import {
   registerStaticHosting,
   resolveWebDistDir,
@@ -62,9 +64,9 @@ function close(server) {
  * 用原始 path 发请求（避免 URL 规范化吞掉 ../ 变体），返回 status/headers/body
  */
 function rawRequest(port, rawPath, { method = "GET", body, headers = {} } = {}) {
-  return new Promise((resolve, reject) => {
+  return withAuthHeaders(port, headers).then((authHeaders) => new Promise((resolve, reject) => {
     const req = http.request(
-      { host: "127.0.0.1", port, path: rawPath, method, headers },
+      { host: "127.0.0.1", port, path: rawPath, method, headers: authHeaders },
       (res) => {
         const chunks = [];
         res.on("data", (c) => chunks.push(c));
@@ -82,7 +84,7 @@ function rawRequest(port, rawPath, { method = "GET", body, headers = {} } = {}) 
     req.on("error", reject);
     if (body) req.write(body);
     req.end();
-  });
+  }));
 }
 
 /** 复刻 server.js 的中间件驱动循环，构造一个只含静态托管（+可选假业务路由）的真实服务 */
@@ -409,7 +411,9 @@ test("server.js 集成：/learnbuddy/ 静态托管 + /api/learnbuddy/* 回归 + 
     assert.equal(materialsJson.ok, true);
     assert.ok(Array.isArray(materialsJson.materials));
 
-    const loginBody = JSON.stringify({ username: "user", password: "123" });
+    // 身份绑定：旧的 user/123 是登录接口里的硬编码后门账号，已随本次改造删除；
+    // 这里改用真实种子账号，验证的仍然是「登录接口在本网关下可用」
+    const loginBody = JSON.stringify({ username: "teacher.chen", password: "123" });
     const login = await rawRequest(gwPort, "/api/learnbuddy/auth/login", {
       method: "POST",
       body: loginBody,

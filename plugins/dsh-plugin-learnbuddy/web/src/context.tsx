@@ -8,12 +8,24 @@ import {
 import { parseRoute, routeHash, courseForRoute } from "./navigation";
 import { Context } from "./store-context";
 import { users, freshState, fixtureGrades } from "./seed";
-import { LIVE_MODE, listMaterials, loginAccount, request } from "./api";
+import {
+  LIVE_MODE,
+  listMaterials,
+  loginAccount,
+  logoutAccount,
+  fetchCurrentAccount,
+  request,
+  getAccessToken,
+  setAccessToken,
+} from "./api";
 import { authenticate, assertTeacher, visibleCourses } from "./domain";
 import { readState, writeState, clearBlobs } from "./storage";
 import type { DemoState, Route, User, ServerReview, AcademicWorkspace } from "./types";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** 访问令牌的会话级存储键：页面刷新后据此恢复登录态，关闭标签页即失效。 */
+const TOKEN_KEY = "learnbuddy-token";
 export function Provider({ children }: { children: ReactNode }) {
   const [initial] = useState(() =>
     LIVE_MODE
@@ -50,7 +62,7 @@ export function Provider({ children }: { children: ReactNode }) {
     setAcademicLoading(true);
     setAcademicError("");
     try {
-      const data = await request<AcademicWorkspace>(`/workspace?userId=${encodeURIComponent(user.id)}`, { signal: controller.signal });
+      const data = await request<AcademicWorkspace>("/workspace", { signal: controller.signal });
       if (controller.signal.aborted) return;
       if (!Array.isArray(data.assignments) || !Array.isArray(data.submissions) || !Array.isArray(data.roster) || !Array.isArray(data.courses)) throw new Error("课程数据不完整，请重试。");
       setAcademic(data);
@@ -67,6 +79,41 @@ export function Provider({ children }: { children: ReactNode }) {
     void refreshAcademic();
     return () => academicRequest.current?.abort();
   }, [refreshAcademic]);
+
+  /**
+   * 刷新页面后用已保存的令牌换回身份。
+   *
+   * 令牌存 sessionStorage：刷新能把人留住，关掉标签页即失效。
+   * 换不回来（令牌过期/被作废）就静默回到登录页，不打断用户。
+   */
+  useEffect(() => {
+    if (!LIVE_MODE) return;
+    let stored = "";
+    try {
+      stored = sessionStorage.getItem(TOKEN_KEY) || "";
+    } catch {
+      return;
+    }
+    if (!stored) return;
+    setAccessToken(stored);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const restored = await fetchCurrentAccount();
+        if (!cancelled) setUser(restored);
+      } catch {
+        setAccessToken("");
+        try {
+          sessionStorage.removeItem(TOKEN_KEY);
+        } catch {
+          /* 内存中的令牌已清空，够用 */
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [reviewResults, setReviewResults] = useState<
     Record<string, ServerReview>
   >({});
@@ -88,7 +135,7 @@ export function Provider({ children }: { children: ReactNode }) {
     setMaterialsLoading(true);
     setMaterialsError("");
     try {
-      const materials = await listMaterials(user.id, controller.signal);
+      const materials = await listMaterials(controller.signal);
       if (controller.signal.aborted) return;
       const next = { ...stateRef.current, materials };
       stateRef.current = next;
@@ -177,9 +224,15 @@ export function Provider({ children }: { children: ReactNode }) {
     setUser(u);
     setCourseId("all");
     try {
-      if (!LIVE_MODE) sessionStorage.setItem("learnbuddy-user", u.id);
+      if (LIVE_MODE) {
+        // 令牌已由 loginAccount 装进 api 层；这里持久化，供刷新后恢复登录态
+        const token = getAccessToken();
+        if (token) sessionStorage.setItem(TOKEN_KEY, token);
+      } else {
+        sessionStorage.setItem("learnbuddy-user", u.id);
+      }
     } catch {
-      /* session remains usable in memory */
+      /* 刷新后需重新登录，但本次会话仍可用 */
     }
     go({ page: "home" });
   }
@@ -206,9 +259,12 @@ export function Provider({ children }: { children: ReactNode }) {
     setCourseId("all");
     try {
       sessionStorage.removeItem("learnbuddy-user");
+      sessionStorage.removeItem(TOKEN_KEY);
     } catch {
       /* memory logout still applies */
     }
+    // 同时让服务端作废这个令牌，否则它在本机被清掉后仍然可用
+    if (LIVE_MODE) void logoutAccount();
     go({ page: "home" });
   }
   async function job(key: string, action: () => void | Promise<void>) {

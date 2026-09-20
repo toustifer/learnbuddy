@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolveActorFromRequest } from "../services/auth.js";
 
 function fail(status, message) {
   throw Object.assign(new Error(message), { status });
@@ -73,9 +74,15 @@ export function registerTeachingRoutes(server, { store, readJson, sendJson }) {
     const create = req.method === "POST" && path === "/api/learnbuddy/assignments";
     if (!workspace && !create && !(edit && req.method === "PUT")) return next();
     try {
-      if (workspace) return sendJson(res, 200, { ok: true, ...buildWorkspace(store, url.searchParams.get("userId")) });
+      // 身份绑定：本中间件注册在 api.js 的统一门槛之前，必须自己解析身份，
+      // 否则 /workspace 与作业增改会绕过鉴权。解析逻辑复用 auth.js，不另写一套。
+      const auth = resolveActorFromRequest(store, req);
+      if (!auth.ok) return sendJson(res, auth.status, { ok: false, error: auth.error });
+      const userId = auth.user.id;
+
+      if (workspace) return sendJson(res, 200, { ok: true, ...buildWorkspace(store, userId) });
       const body = await readJson(req);
-      const assignment = saveAssignment(store, body.userId, body, edit ? decodeURIComponent(edit[1]) : null);
+      const assignment = saveAssignment(store, userId, body, edit ? decodeURIComponent(edit[1]) : null);
       return sendJson(res, create ? 201 : 200, { ok: true, assignment });
     } catch (error) {
       return sendJson(res, error.status || 400, { ok: false, error: error.message });

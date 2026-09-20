@@ -40,16 +40,17 @@ import {
   calculateGradesAndTotal
 } from "../src/services/autograder-pipeline.js";
 import { registerLearnBuddyRoutes } from "../src/routes/api.js";
+import { withAuthHeaders } from "./helpers/auth.js";
 
 function makeHttpRequest(port, method, path, headers = {}, body = null) {
-  return new Promise((resolve, reject) => {
+  return withAuthHeaders(port, headers).then((authHeaders) => new Promise((resolve, reject) => {
     const req = http.request(
       {
         hostname: "127.0.0.1",
         port,
         path,
         method,
-        headers
+        headers: authHeaders,
       },
       (res) => {
         const chunks = [];
@@ -68,7 +69,7 @@ function makeHttpRequest(port, method, path, headers = {}, body = null) {
       req.write(typeof body === "string" ? body : JSON.stringify(body));
     }
     req.end();
-  });
+  }));
 }
 
 // ==========================================

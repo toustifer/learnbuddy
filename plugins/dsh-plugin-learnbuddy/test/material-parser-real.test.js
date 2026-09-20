@@ -35,6 +35,7 @@ import { StorageService } from "../src/services/storage.js";
 import { DatabaseStore } from "../src/db/store.js";
 import { registerLearnBuddyRoutes } from "../src/routes/api.js";
 import { renderTextPng } from "../scripts/lib/png-text.mjs";
+import { withAuthHeaders } from "./helpers/auth.js";
 import {
   buildMinimalPdf,
   buildPdf,
@@ -486,8 +487,8 @@ test("引擎可用性：anydoc 可加载，且能给出当前平台的原生包�
 // ===========================================================================
 
 function makeHttpRequest(port, method, reqPath, headers = {}, body = null) {
-  return new Promise((resolve, reject) => {
-    const req = http.request({ hostname: "127.0.0.1", port, path: reqPath, method, headers }, (res) => {
+  return withAuthHeaders(port, headers).then((authHeaders) => new Promise((resolve, reject) => {
+    const req = http.request({ hostname: "127.0.0.1", port, path: reqPath, method, headers: authHeaders }, (res) => {
       const chunks = [];
       res.on("data", (c) => chunks.push(c));
       res.on("end", () => resolve({ statusCode: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
@@ -495,7 +496,7 @@ function makeHttpRequest(port, method, reqPath, headers = {}, body = null) {
     req.on("error", reject);
     if (body) req.write(body);
     req.end();
-  });
+  }));
 }
 
 test("HTTP 上传：真实 DOCX 走真解析；损坏 PDF 明确回传 parseStatus=failed 且 material 不标 ready", async (t) => {

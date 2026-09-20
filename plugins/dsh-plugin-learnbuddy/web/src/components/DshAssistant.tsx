@@ -233,7 +233,7 @@ function EmbeddedAssistant({
                         ? {
                             ...m,
                             contextSections: (
-                              await getMaterialContext(m.id, user!.id)
+                              await getMaterialContext(m.id)
                             ).sections,
                           }
                         : m;

@@ -18,6 +18,26 @@ export class ApiError extends Error {
     super(message);
   }
 }
+
+/**
+ * 访问令牌（身份绑定）。
+ *
+ * 放在模块级而不是每次现取：`request()` 是所有请求的唯一出口，
+ * 令牌在这里统一附加，避免某个调用点忘了带。
+ *
+ * 令牌由服务端登录接口签发；前端不再往任何请求里塞 `userId` ——
+ * 之前后端信任调用方自报的 `userId`，任何人都能冒充教师拿到全班成绩。
+ */
+let accessToken = "";
+
+export function setAccessToken(token: string) {
+  accessToken = typeof token === "string" ? token : "";
+}
+
+export function getAccessToken() {
+  return accessToken;
+}
+
 export async function request<T>(
   path: string,
   init: RequestInit = {},
@@ -32,6 +52,7 @@ export async function request<T>(
     const headers = new Headers(init.headers);
     if (typeof init.body === "string")
       headers.set("Content-Type", "application/json");
+    if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
     const res = await fetch(API_BASE + path, {
       ...init,
       headers,
@@ -66,35 +87,52 @@ const post = (body: unknown): RequestInit => ({
   method: "POST",
   body: JSON.stringify(body),
 });
-const viewerQuery = (userId: string) => {
-  if (!userId.trim()) throw new ApiError("请先登录后查看资料。");
-  return new URLSearchParams({ userId });
-};
+
+/** 把服务端返回的用户补全成前端使用的形状（课程列表 + 头像首字）。 */
+async function completeAccount(user: User): Promise<User> {
+  if (!user?.id || !["student", "teacher"].includes(user.role))
+    throw new ApiError("服务返回的账号身份不完整。");
+  const courses = user.courses ?? (await request<{ courses: Course[] }>("/workspace")).courses;
+  if (!Array.isArray(courses)) throw new ApiError("服务未返回有效的课程列表。");
+  return {
+    ...user,
+    courses,
+    initials: user.initials || user.name.slice(0, 1),
+  };
+}
+
 export async function loginAccount(
   username: string,
   password: string,
 ): Promise<User> {
-  const data = await request<{ user: User }>(
+  const data = await request<{ user: User; token?: string }>(
     "/auth/login",
     post({ username: username.trim(), password }),
   );
-  if (!data.user?.id || !["student", "teacher"].includes(data.user.role))
-    throw new ApiError("服务返回的账号身份不完整。");
-  const courses = data.user.courses ?? (await request<{ courses: Course[] }>(
-    `/workspace?userId=${encodeURIComponent(data.user.id)}`,
-  )).courses;
-  if (!Array.isArray(courses)) throw new ApiError("服务未返回有效的课程列表。");
-  return {
-    ...data.user,
-    courses,
-    initials: data.user.initials || data.user.name.slice(0, 1),
-  };
+  if (!data.token) throw new ApiError("服务未返回访问令牌，无法继续使用。");
+  // 令牌要在后续请求之前装好，否则紧随其后的 /workspace 会被判为未登录
+  setAccessToken(data.token);
+  return completeAccount(data.user);
 }
-export async function listMaterials(userId: string, signal?: AbortSignal) {
-  const data = await request<{ materials: Material[] }>(
-    `/materials?${viewerQuery(userId)}`,
-    { signal },
-  );
+
+/** 用已有令牌换回当前身份（页面刷新后恢复登录态）。 */
+export async function fetchCurrentAccount(): Promise<User> {
+  const data = await request<{ user: User }>("/auth/me");
+  return completeAccount(data.user);
+}
+
+/** 退出登录：先让服务端作废令牌，再清本地。服务端失败也要清本地。 */
+export async function logoutAccount(): Promise<void> {
+  try {
+    await request("/auth/logout", { method: "POST" });
+  } catch {
+    /* 令牌可能已过期；本地清理照做 */
+  }
+  setAccessToken("");
+}
+
+export async function listMaterials(signal?: AbortSignal) {
+  const data = await request<{ materials: Material[] }>("/materials", { signal });
   if (!Array.isArray(data.materials))
     throw new ApiError("服务未返回有效的资料列表。");
   return data.materials.map((m) => ({
@@ -125,11 +163,10 @@ export interface MaterialContext {
 }
 export async function getMaterialContext(
   id: string,
-  userId: string,
   signal?: AbortSignal,
 ) {
   const data = await request<{ context: MaterialContext }>(
-    `/materials/${encodeURIComponent(id)}/context?${viewerQuery(userId)}`,
+    `/materials/${encodeURIComponent(id)}/context`,
     { signal },
   );
   if (!data.context || !Array.isArray(data.context.sections))
@@ -145,7 +182,7 @@ export async function uploadMaterial(
   const body = new FormData();
   body.append("file", file);
   body.append("courseId", courseId);
-  body.append("ownerId", user.id);
+  // 归属由服务端从登录令牌取，不再由前端声明 ownerId
   body.append("visibility", user.role === "student" ? "private" : visibility);
   const data = await request<{
     material: Material;
@@ -173,7 +210,6 @@ export const isDegradedAnswer = (answer: AskResult) =>
 export const ask = (
   question: string,
   material: Material,
-  user: User,
   signal?: AbortSignal,
 ) =>
   request<AskResult>(
@@ -183,14 +219,20 @@ export const ask = (
         question,
         materialId: material.id,
         courseId: material.courseId,
-        userId: user.id,
       }),
       signal,
     },
     90000,
   );
+/**
+ * 原件预览 / 下载地址。
+ *
+ * 这两个端点由浏览器直接发起（`<img src>` / `<a href>`），无法附加 Authorization 头，
+ * 因此把令牌放进查询串。服务端仍会校验令牌，只是取令牌的位置不同。
+ */
 export const fileUrl = (id: string, download = false) =>
-  `${API_BASE}/files/${encodeURIComponent(id)}/${download ? "download" : "view"}`;
+  `${API_BASE}/files/${encodeURIComponent(id)}/${download ? "download" : "view"}` +
+  (accessToken ? `?token=${encodeURIComponent(accessToken)}` : "");
 export function parseErrorText(material: Material) {
   if (material.status === "ready" && material.parseStatus !== "failed") return "服务器暂未返回可用知识点，可先查看原文。";
   if (material.parseStatus !== "failed")

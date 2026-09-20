@@ -31,6 +31,7 @@ import path from "node:path";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 import { createGateway, DSH_AUTHORITY } from "../server.js";
+import { withAuthHeaders } from "./helpers/auth.js";
 import { DatabaseStore } from "../src/db/store.js";
 import { StorageService } from "../src/services/storage.js";
 import {
@@ -90,8 +91,9 @@ function close(server) {
 
 /** 真实 HTTP 请求，返回 status/headers/body */
 function rawRequest(port, rawPath, { method = "GET", body, headers = {} } = {}) {
-  return new Promise((resolve, reject) => {
-    const req = http.request({ host: "127.0.0.1", port, path: rawPath, method, headers }, (res) => {
+  // 身份绑定后 /api/learnbuddy/* 要求令牌；静态与代理路径不受影响
+  return withAuthHeaders(port, headers).then((authHeaders) => new Promise((resolve, reject) => {
+    const req = http.request({ host: "127.0.0.1", port, path: rawPath, method, headers: authHeaders }, (res) => {
       const chunks = [];
       res.on("data", (c) => chunks.push(c));
       res.on("end", () => {
@@ -102,7 +104,7 @@ function rawRequest(port, rawPath, { method = "GET", body, headers = {} } = {}) 
     req.on("error", reject);
     if (body) req.write(body);
     req.end();
-  });
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1018,7 +1020,9 @@ test("回归：注入开启时 /api/learnbuddy/* 业务路由仍由本网关处�
     assert.equal(json.ok, true);
     assert.ok(Array.isArray(json.materials));
 
-    const loginBody = JSON.stringify({ username: "user", password: "123" });
+    // 身份绑定：旧的 user/123 是登录接口里的硬编码后门账号，已随本次改造删除；
+    // 这里改用真实种子账号，验证的仍然是「登录接口在本网关下可用」
+    const loginBody = JSON.stringify({ username: "teacher.chen", password: "123" });
     const login = await rawRequest(h.port, "/api/learnbuddy/auth/login", {
       method: "POST",
       body: loginBody,

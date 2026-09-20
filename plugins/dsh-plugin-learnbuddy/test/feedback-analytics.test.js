@@ -29,6 +29,7 @@ import http from "node:http";
 import { DatabaseStore } from "../src/db/store.js";
 import { FeedbackAnalyticsService } from "../src/services/feedback-analytics.js";
 import { registerLearnBuddyRoutes } from "../src/routes/api.js";
+import { withAuthHeaders, tokenFor } from "./helpers/auth.js";
 
 /**
  * 确定性 LLM 桩：未配置 Key、返回非 JSON 文本，
@@ -61,9 +62,9 @@ function buildNetworkGrades(scores, comments = {}) {
 }
 
 function makeHttpRequest(port, method, path, headers = {}, body = null) {
-  return new Promise((resolve, reject) => {
+  return withAuthHeaders(port, headers).then((authHeaders) => new Promise((resolve, reject) => {
     const req = http.request(
-      { hostname: "127.0.0.1", port, path, method, headers },
+      { hostname: "127.0.0.1", port, path, method, headers: authHeaders },
       (res) => {
         const chunks = [];
         res.on("data", (c) => chunks.push(c));
@@ -77,7 +78,7 @@ function makeHttpRequest(port, method, path, headers = {}, body = null) {
       req.write(typeof body === "string" ? body : JSON.stringify(body));
     }
     req.end();
-  });
+  }));
 }
 
 // ==========================================
@@ -635,33 +636,45 @@ test("HTTP API - review-publish / analytics/assignment / analytics/course 全链
   const jsonHeaders = { "Content-Type": "application/json" };
 
   try {
-    // 1. 参数缺失 400
+    // 1. 身份绑定：身份只来自令牌，body 里的 teacherId 已不再是身份来源。
+    //    不带令牌打 review-publish 一律 401（旧用例断言「缺 teacherId → 400」已随身份绑定退役，
+    //    因为此时 teacherId 取自令牌、永远存在，入参 teacherId 被忽略）。
+    const unauth = await makeHttpRequest(
+      port,
+      "POST",
+      "/api/learnbuddy/grader/review-publish",
+      { ...jsonHeaders, skipAuth: true },
+      {
+        submissionId: "sub-zhou-net",
+        teacherId: "t-chen",
+        grades: buildNetworkGrades([18, 27, 24, 14])
+      }
+    );
+    assert.equal(unauth.statusCode, 401, "未登录复核必须 401");
+
+    // 参数校验与身份无关：带合法令牌（默认 teacher.chen）但缺 submissionId 仍为 400
     const noSubmission = await makeHttpRequest(port, "POST", "/api/learnbuddy/grader/review-publish", jsonHeaders, {
-      teacherId: "t-chen",
       grades: []
     });
     assert.equal(noSubmission.statusCode, 400);
     assert.ok(JSON.parse(noSubmission.body.toString()).error.includes("缺少必要参数: submissionId"));
 
-    const noTeacher = await makeHttpRequest(port, "POST", "/api/learnbuddy/grader/review-publish", jsonHeaders, {
-      submissionId: "sub-zhou-net",
-      grades: []
-    });
-    assert.equal(noTeacher.statusCode, 400);
-    assert.ok(JSON.parse(noTeacher.body.toString()).error.includes("缺少必要参数: teacherId"));
-
+    // 参数校验与身份无关：grades 非数组必须在进入业务前被拦下
     const badGrades = await makeHttpRequest(port, "POST", "/api/learnbuddy/grader/review-publish", jsonHeaders, {
       submissionId: "sub-zhou-net",
-      teacherId: "t-chen",
       grades: "not-an-array"
     });
     assert.equal(badGrades.statusCode, 400);
     assert.ok(JSON.parse(badGrades.body.toString()).error.includes("grades 必须为数组格式"));
 
-    // 2. 越权教师 403
-    const forbidden = await makeHttpRequest(port, "POST", "/api/learnbuddy/grader/review-publish", jsonHeaders, {
+    // 2. 越权教师 403：以 teacher.lin（「数据库原理」执教教师，非 network 执教教师）真实登录后
+    //    去打 t-chen 课程下的提交。身份不可伪造——body 里写什么都不会改变判定结果。
+    const asLin = {
+      ...jsonHeaders,
+      Authorization: `Bearer ${await tokenFor(port, { username: "teacher.lin", password: "123" })}`
+    };
+    const forbidden = await makeHttpRequest(port, "POST", "/api/learnbuddy/grader/review-publish", asLin, {
       submissionId: "sub-zhou-net",
-      teacherId: "t-lin",
       grades: buildNetworkGrades([18, 27, 24, 14])
     });
     assert.equal(forbidden.statusCode, 403);
@@ -670,15 +683,13 @@ test("HTTP API - review-publish / analytics/assignment / analytics/course 全链
     // 3. 报告不存在 404
     const notFound = await makeHttpRequest(port, "POST", "/api/learnbuddy/grader/review-publish", jsonHeaders, {
       submissionId: "sub-ghost",
-      teacherId: "t-chen",
       grades: buildNetworkGrades([18, 27, 24, 14])
     });
     assert.equal(notFound.statusCode, 404);
 
-    // 4. 正常复核发布（userId 作为 teacherId 别名 + 越界分数 clamp）
+    // 4. 正常复核发布：不带任何身份字段，复核人取自默认的 teacher.chen 令牌（越界分数 clamp）
     const publishRes = await makeHttpRequest(port, "POST", "/api/learnbuddy/grader/review-publish", jsonHeaders, {
       submissionId: "sub-zhou-net",
-      userId: "t-chen",
       grades: buildNetworkGrades([18, 27, 24, 14]),
       summary: "HTTP 全链路复核发布。"
     });
