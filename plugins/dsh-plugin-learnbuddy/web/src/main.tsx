@@ -9,6 +9,8 @@ import { installRandomUUIDPolyfill } from "./lib/random-id";
 import "./styles.css";
 import "./workspace.css";
 import "./product.css";
+// v0.2 复核组件的样式桥接（只含 theme + utilities，无 preflight）；详见文件头注释
+import "./rg-bridge.css";
 
 // 非安全上下文（HTTP + 非 localhost）没有 crypto.randomUUID，渲染期调用会抛
 // TypeError 并被 ErrorBoundary 兜底。挂载 React 之前幂等补齐；原生可用时不改动。

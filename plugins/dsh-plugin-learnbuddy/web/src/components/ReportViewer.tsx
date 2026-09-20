@@ -1,27 +1,42 @@
-import React, { useState, useEffect, useRef } from "react";
-import { DocumentPage, AnnotationItem } from "../types";
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import { DocumentPage, AnnotationItem, ParsedReportContent, ParsedReportPage } from "../types";
 
 export interface ReportViewerProps {
+  /** 解析后的报告结构（v0.2 页面按这个传参） */
+  report?: ParsedReportContent | null;
+  /** 兼容旧调用：直接传页面数组 */
+  pages?: DocumentPage[];
   fileName?: string;
-  pages: DocumentPage[];
-  activePage: number;
+  activePage?: number;
   highlightQuote?: string | null;
-  annotations: AnnotationItem[];
+  annotations?: AnnotationItem[];
   onPageChange?: (page: number) => void;
   onAddAnnotation?: (annotation: Omit<AnnotationItem, "id" | "createdAt">) => void;
   onDeleteAnnotation?: (id: string) => void;
 }
 
 export const ReportViewer: React.FC<ReportViewerProps> = ({
-  fileName = "学生实验与设计报告.pdf",
-  pages,
-  activePage,
+  report = null,
+  pages = [],
+  fileName,
+  activePage = 1,
   highlightQuote,
-  annotations,
+  annotations = [],
   onPageChange,
   onAddAnnotation,
   onDeleteAnnotation,
 }) => {
+  // 两种入参二选一：优先用显式 pages，否则取 report.pages，并归一化成 DocumentPage
+  const resolvedPages: DocumentPage[] = useMemo(() => {
+    const source: ParsedReportPage[] = pages.length > 0 ? pages : (report?.pages ?? []);
+    return source.map((page) => ({
+      ...page,
+      heading: page.heading ?? page.title ?? "",
+      eyebrow: page.eyebrow ?? "",
+    }));
+  }, [pages, report]);
+  const resolvedFileName =
+    fileName || report?.fileName || report?.title || "学生实验与设计报告.pdf";
   const [zoom, setZoom] = useState<number>(100);
   const [selectedText, setSelectedText] = useState<string>("");
   const [showAnnotationModal, setShowAnnotationModal] = useState<boolean>(false);
@@ -91,18 +106,16 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({
     );
   };
 
-  const currentPageAnnotations = annotations.filter((a) => a.page === activePage);
-
   return (
     <div className="flex flex-col h-full bg-slate-100 border-r border-slate-200 relative select-text" ref={containerRef}>
       {/* 顶部工具栏 */}
       <div className="h-12 bg-white border-b border-slate-200 px-4 flex items-center justify-between shadow-xs select-none">
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold px-2 py-0.5 bg-blue-50 text-blue-700 rounded border border-blue-200">
-            {fileName.endsWith(".docx") ? "DOCX 原文解析" : "PDF 结构化版面"}
+            {resolvedFileName.endsWith(".docx") ? "DOCX 原文解析" : "PDF 结构化版面"}
           </span>
-          <span className="text-xs text-slate-600 font-medium truncate max-w-[200px]" title={fileName}>
-            {fileName}
+          <span className="text-xs text-slate-600 font-medium truncate max-w-[200px]" title={resolvedFileName}>
+            {resolvedFileName}
           </span>
         </div>
 
@@ -117,11 +130,11 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({
             ◀
           </button>
           <span className="px-1.5 font-medium">
-            第 <strong className="text-slate-800">{activePage}</strong> / {pages.length} 页
+            第 <strong className="text-slate-800">{activePage}</strong> / {resolvedPages.length} 页
           </span>
           <button
-            onClick={() => onPageChange && onPageChange(Math.min(pages.length, activePage + 1))}
-            disabled={activePage >= pages.length}
+            onClick={() => onPageChange && onPageChange(Math.min(resolvedPages.length, activePage + 1))}
+            disabled={activePage >= resolvedPages.length}
             className="px-2 py-1 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded disabled:opacity-40 disabled:cursor-not-allowed"
             title="下一页"
           >
@@ -185,7 +198,7 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({
         className="flex-1 overflow-y-auto p-6 flex flex-col items-center gap-6"
         onMouseUp={handleMouseUp}
       >
-        {pages.map((page, index) => {
+        {resolvedPages.map((page, index) => {
           const pageNum = index + 1;
           const isActive = pageNum === activePage;
           const pageAnnotations = annotations.filter((a) => a.page === pageNum);
@@ -193,7 +206,9 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({
           return (
             <div
               key={pageNum}
-              ref={(el) => (pageRefs.current[pageNum] = el)}
+              ref={(el) => {
+                pageRefs.current[pageNum] = el;
+              }}
               style={{ transform: `scale(${zoom / 100})`, transformOrigin: "top center" }}
               className={`w-full max-w-3xl bg-white rounded-lg shadow-md border transition-all duration-200 p-8 min-h-[950px] relative flex flex-col justify-between ${
                 isActive ? "ring-2 ring-blue-500 border-blue-400" : "border-slate-200"
@@ -322,7 +337,7 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({
               {/* 页脚 */}
               <div className="mt-6 pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
                 <span>LearnBuddy AutoGrader Multi-Modal Evidence View</span>
-                <span>Page {pageNum} of {pages.length}</span>
+                <span>Page {pageNum} of {resolvedPages.length}</span>
               </div>
             </div>
           );
