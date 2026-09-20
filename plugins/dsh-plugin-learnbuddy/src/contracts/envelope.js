@@ -139,14 +139,30 @@ export function withEnvelope(body, options = {}) {
   const envelope = {
     ...body,
     schemaVersion: SCHEMA_VERSION,
-    asOf: options.asOf || new Date().toISOString(),
-    warnings: Array.isArray(options.warnings) ? options.warnings : [],
-    evidenceRefs: Array.isArray(options.evidenceRefs) ? options.evidenceRefs : [],
-    nextCursor: options.nextCursor !== undefined ? options.nextCursor : null,
+    asOf: options.asOf || body.asOf || new Date().toISOString(),
+    // 三个"可选容器"字段：**优先取端点自己给的值**（端点在响应体里直接带
+    // warnings / evidenceRefs / nextCursor 即可），否则取 options，再否则给空值。
+    // 这样端点可以自然地声明"本次回答是降级结果"，不必额外传参。
+    warnings: asArray(options.warnings, body.warnings),
+    evidenceRefs: asArray(options.evidenceRefs, body.evidenceRefs),
+    nextCursor:
+      options.nextCursor !== undefined
+        ? options.nextCursor
+        : body.nextCursor !== undefined
+          ? body.nextCursor
+          : null,
     // 失败时 data 没有意义，固定为 null，避免调用方误把错误体当数据读
     data: isFailure ? (options.data !== undefined ? options.data : null) : options.data !== undefined ? options.data : rest
   };
   return envelope;
+}
+
+/** 取第一个是数组的值；都不是则给空数组。 */
+function asArray(...candidates) {
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate;
+  }
+  return [];
 }
 
 /**

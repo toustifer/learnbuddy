@@ -13,6 +13,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { initSchema, seedDatabase } from "./schema.js";
 import { hashPassword, issueToken, sessionExpiry } from "../services/auth.js";
+import { projectSubmission, projectSubmissions } from "../contracts/projection.js";
 
 /**
  * Row Mappers
@@ -654,23 +655,18 @@ export class DatabaseStore {
 
       if (user.role === "teacher") {
         if (!this.hasCourse(userId, assignment.courseId)) return null;
-        return submission;
-      } else {
-        // 学生只能看自己的提交
-        if (submission.studentId !== userId) return null;
-        if (!this.hasCourse(userId, assignment.courseId)) return null;
-
-        // 如果状态非 published，学生的建议分必须被置空（隐藏未确认分数）
-        if (submission.status !== "published") {
-          return {
-            ...submission,
-            grades: [],
-            summary: "",
-            failure: undefined
-          };
-        }
-        return submission;
+        // 字段裁剪交给投影契约统一决定（见 src/contracts/projection.js）
+        return projectSubmission(submission, user);
       }
+
+      // 学生只能看自己的提交
+      if (submission.studentId !== userId) return null;
+      if (!this.hasCourse(userId, assignment.courseId)) return null;
+
+      // D2：未发布时学生不得看到分数与评语。
+      // 这里**不再手写黑名单**——原先只清 grades/summary，漏掉了 history
+      // （history 里装着历次评分的 grades 与 summary），等于留了一条泄漏通道。
+      return projectSubmission(submission, user);
     }
 
     return submission;
@@ -679,8 +675,10 @@ export class DatabaseStore {
   /**
    * 严格实现师生权限过滤逻辑：
    * getSubmissions(userId, assignmentId):
-   * 教师能看全班（保留评分和评语）；
-   * 学生仅能看自己的；且如果状态非 published，学生的建议分必须被置空（隐藏未确认分数）。
+   * 教师能看全班；学生仅能看自己的。
+   *
+   * **字段裁剪一律交给投影契约**（`projectSubmissions`）：
+   * 它在服务端一处决定「谁看到什么」，避免各调用点各写一套规则而出现漏项。
    */
   getSubmissions(userId, assignmentId) {
     const user = this.getUser(userId);
@@ -694,35 +692,20 @@ export class DatabaseStore {
       return [];
     }
 
-    if (user.role === "teacher") {
-      // 教师能看全班
-      const stmt = this.db.prepare(`
-        SELECT * FROM submissions
-        WHERE assignment_id = ?
-        ORDER BY submitted_at DESC, id ASC
-      `);
-      return stmt.all(assignmentId).map(mapSubmission);
-    } else {
-      // 学生仅能看自己的
-      const stmt = this.db.prepare(`
-        SELECT * FROM submissions
-        WHERE assignment_id = ? AND student_id = ?
-        ORDER BY submitted_at DESC, id ASC
-      `);
-      const rows = stmt.all(assignmentId, userId);
-      return rows.map(mapSubmission).map((s) => {
-        if (s.status !== "published") {
-          // 未发布的作业建议分严格对学生隐藏
-          return {
-            ...s,
-            grades: [],
-            summary: "",
-            failure: undefined
-          };
-        }
-        return s;
-      });
-    }
+    const rows =
+      user.role === "teacher"
+        ? this.db
+            .prepare(
+              "SELECT * FROM submissions WHERE assignment_id = ? ORDER BY submitted_at DESC, id ASC"
+            )
+            .all(assignmentId)
+        : this.db
+            .prepare(
+              "SELECT * FROM submissions WHERE assignment_id = ? AND student_id = ? ORDER BY submitted_at DESC, id ASC"
+            )
+            .all(assignmentId, userId);
+
+    return projectSubmissions(rows.map(mapSubmission), user);
   }
 
   listSubmissions(assignmentId = null) {

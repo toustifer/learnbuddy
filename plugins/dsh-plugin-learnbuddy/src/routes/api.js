@@ -391,9 +391,23 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
       const courseId = url.searchParams.get("courseId") || undefined;
       const materials = store.getMaterials(userId, courseId);
 
+      // 「未读范围」显式暴露：把还没解析成功的课件点名，避免调用方
+      // 以为"列表拿到了"就等于"内容都读得到"。
+      const unreadable = materials.filter(
+        (m) => m.parseStatus === "failed" || m.parseStatus === "pending"
+      );
+      const materialWarnings = unreadable.length
+        ? [
+            `有 ${unreadable.length} 份课件尚未解析成功，不在本次可读范围内：` +
+              unreadable.slice(0, 3).map((m) => m.title).join("、") +
+              (unreadable.length > 3 ? " 等" : "")
+          ]
+        : [];
+
       return sendJson(res, 200, {
         ok: true,
-        materials
+        materials,
+        warnings: materialWarnings
       });
     }
 
@@ -677,7 +691,15 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         });
       }
 
-      return sendJson(res, 200, sessionContext);
+      // 契约层要求：降级与「未读范围」必须显式暴露，不能让人以为拿到的是全量
+      const sessionWarnings = [];
+      if (sessionContext.truncated) {
+        sessionWarnings.push("课件上下文因长度上限被截断，本次未包含全文。");
+      }
+      if (Number(sessionContext.cardsCount) === 0) {
+        sessionWarnings.push("本课件暂无已发布的教师答疑卡，回答将主要依据课件原文。");
+      }
+      return sendJson(res, 200, { ...sessionContext, warnings: sessionWarnings });
     }
 
     // 2) POST /api/learnbuddy/dsh/quote
@@ -808,15 +830,31 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
             answer: buildQaFallbackAnswer(question, matContext),
             contextInjected: Boolean(matContext || matchedCards.length > 0),
             fallback: true,
-            truncated: Boolean(resp.truncated)
+            truncated: Boolean(resp.truncated),
+            // 契约层要求：降级必须**显式暴露**，不能只藏在文案里
+            warnings: [
+              resp.truncated
+                ? "模型输出被截断，本次回答已降级为基于课件骨架的兜底内容，请以教师复核为准。"
+                : "模型未返回有效内容，本次回答已降级为基于课件骨架的兜底内容，请以教师复核为准。"
+            ]
           });
+        }
+
+        const contextInjected = Boolean(matContext || matchedCards.length > 0);
+        const warnings = [];
+        if (!contextInjected) {
+          //「未读范围」要显式暴露：没有课件上下文，回答就不含这门课的具体内容
+          warnings.push(
+            "本次回答未注入课件上下文（未指定 materialId，或该课件对当前身份不可读），回答可能不含本课具体内容。"
+          );
         }
 
         return sendJson(res, 200, {
           ok: true,
           source: "agent_llm",
           answer,
-          contextInjected: Boolean(matContext || matchedCards.length > 0)
+          contextInjected,
+          warnings
         });
       } catch {
         // 模型请求失败兜底提示（严格遵循图表与答疑规范）
@@ -824,7 +862,10 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
           ok: true,
           source: "agent_llm",
           answer: buildQaFallbackAnswer(question, matContext),
-          fallback: true
+          fallback: true,
+          warnings: [
+            "模型服务暂不可用，本次回答已降级为兜底内容；这不是基于本次提问的模型回答，请稍后重试。"
+          ]
         });
       }
     }

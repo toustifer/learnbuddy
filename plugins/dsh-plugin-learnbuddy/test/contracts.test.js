@@ -316,3 +316,75 @@ test("契约·构造 - withEnvelope 始终补齐六个字段", () => {
   assert.equal(env.ok, true);
   assert.deepEqual(env.courses, [], "扁平字段必须保留");
 });
+
+// ===========================================================================
+// 4. warnings：降级与「未读范围」必须显式暴露
+// ===========================================================================
+
+test("契约·warnings - 有课件没解析成功时必须点名，不能被当成「都读得到」", async () => {
+  const t = await startTestServer();
+  try {
+    t.store.createMaterial({
+      id: "mat-broken-for-test",
+      courseId: "network",
+      ownerId: "t-chen",
+      title: "解析失败的课件",
+      visibility: "course",
+      // 注意：materials.status 的取值只有 ready / pending（有 CHECK 约束）；
+      // 「解析失败」是用 pending + parseErrorCode 表达的，映射层再派生出 parseStatus=failed
+      status: "pending",
+      parseErrorCode: "malformed",
+      parseError: "文件已损坏"
+    });
+
+    const stored = t.store.getMaterialById("mat-broken-for-test", "t-chen");
+    assert.equal(stored.parseStatus, "failed", "前置条件：这份课件应被判为解析失败");
+
+    const res = await t.get(`${BASE}/materials?courseId=network`, await t.as("t-chen"));
+    assert.equal(res.statusCode, 200);
+    assert.ok(Array.isArray(res.json.warnings), "warnings 必须是数组");
+    assert.equal(res.json.warnings.length > 0, true, "有未解析课件时必须给出 warning");
+    assert.match(res.json.warnings[0], /尚未解析成功/, "要说明是「解析没成功」，不是「没有内容」");
+    assert.match(res.json.warnings[0], /解析失败的课件/, "要点名是哪份，Agent 才能据实向用户说明");
+  } finally {
+    await t.close();
+  }
+});
+
+test("契约·warnings - 一切正常时不产生噪声 warning", async () => {
+  const t = await startTestServer();
+  try {
+    const res = await t.get(`${BASE}/materials?courseId=os`, await t.as("t-chen"));
+    assert.deepEqual(
+      res.json.warnings,
+      [],
+      "没问题就不要给 warning —— 否则 Agent 会学会忽略 warnings，真正降级时反而看不见"
+    );
+  } finally {
+    await t.close();
+  }
+});
+
+test("契约·warnings - 课件没有答疑卡时说明「未读范围」", async () => {
+  const t = await startTestServer();
+  try {
+    const headers = await t.as("t-chen");
+
+    // mat-wire 种子数据里卡片数为 0
+    const noCard = await t.post(`${BASE}/dsh/session-context`, { materialId: "mat-wire" }, headers);
+    assert.equal(noCard.statusCode, 200);
+    assert.ok(Array.isArray(noCard.json.warnings));
+    assert.equal(noCard.json.warnings.some((w) => /答疑卡/.test(w)), true, "没有卡时要说明");
+
+    // mat-tcp 有 1 张卡 —— 不应出现「没有答疑卡」这条
+    const hasCard = await t.post(`${BASE}/dsh/session-context`, { materialId: "mat-tcp" }, headers);
+    assert.equal(hasCard.statusCode, 200);
+    assert.equal(
+      hasCard.json.warnings.some((w) => /暂无已发布的教师答疑卡/.test(w)),
+      false,
+      "有卡时不得报「没有卡」，否则就是假 warning"
+    );
+  } finally {
+    await t.close();
+  }
+});
