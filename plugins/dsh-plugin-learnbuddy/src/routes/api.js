@@ -23,6 +23,7 @@ import { MultimodalLLMClient } from "../services/llm.js";
 import { DatabaseStore } from "../db/store.js";
 import { StorageService, defaultStorage, getMimeType } from "../services/storage.js";
 import { verifyPassword, readBearerToken, readQueryToken, resolveActorFromRequest } from "../services/auth.js";
+import { ERROR_CODES, classifyError, withEnvelope } from "../contracts/envelope.js";
 import { registerTeachingRoutes } from "./teaching.js";
 import { registerSpeechRoutes } from "./speech.js";
 
@@ -252,14 +253,41 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     }
   };
 
+  /**
+   * 统一响应出口（契约层「访问契约」在这里**定义一次**）。
+   *
+   * 为什么放在这个函数里：所有端点、`teaching.js`、`speech` 共用同一个出口，
+   * 因此**新增端点自动合规**——不需要每个端点自己记得加信封或错误码。
+   *
+   * 做两件事：
+   *   1. 成功：补 `schemaVersion` / `asOf` / `warnings` / `evidenceRefs` / `nextCursor` / `data`
+   *   2. 失败：按既有文案归类出 `code`（调用方已显式给出 `code` 时以调用方为准），
+   *      同时**保留原有 `error` 字段**，不打断现有客户端
+   */
   const sendJson = (res, statusCode, data) => {
+    let payload = data;
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      if (data.ok === false) {
+        const code = typeof data.code === "string" ? data.code : classifyError(data.error);
+        const spec = ERROR_CODES[code];
+        const merged = {
+          ...data,
+          code,
+          error: data.error || (spec && spec.defaultMessage) || "请求失败"
+        };
+        payload = withEnvelope(merged, { data: null });
+      } else {
+        payload = withEnvelope(data);
+      }
+    }
+
     res.writeHead(statusCode, {
       "Content-Type": "application/json; charset=utf-8",
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization, X-File-Name"
     });
-    res.end(JSON.stringify(data));
+    res.end(JSON.stringify(payload));
   };
 
   registerTeachingRoutes(server, { store, readJson: parseJsonBody, sendJson });
