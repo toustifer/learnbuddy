@@ -17,6 +17,7 @@ import {
   request,
   getAccessToken,
   setAccessToken,
+  onUnauthorized,
 } from "./api";
 import { authenticate, assertTeacher, visibleCourses } from "./domain";
 import { readState, writeState, clearBlobs } from "./storage";
@@ -236,7 +237,13 @@ export function Provider({ children }: { children: ReactNode }) {
     }
     go({ page: "home" });
   }
-  function logout() {
+  /**
+   * 清掉本机的登录态与数据（**不发服务端请求**）。
+   *
+   * 抽出来是因为有两个触发点：用户主动登出、以及**会话在运行中途失效**（401）。
+   * 两者的清理动作完全一样，只是前者还要顺手让服务端作废令牌。
+   */
+  function clearSession() {
     epoch.current++;
     materialsRequest.current?.abort();
     academicRequest.current?.abort();
@@ -263,10 +270,31 @@ export function Provider({ children }: { children: ReactNode }) {
     } catch {
       /* memory logout still applies */
     }
+  }
+
+  function logout() {
+    clearSession();
     // 同时让服务端作废这个令牌，否则它在本机被清掉后仍然可用
     if (LIVE_MODE) void logoutAccount();
     go({ page: "home" });
   }
+
+  /**
+   * 会话失效时自动回到登录页。
+   *
+   * 令牌可能在运行到一半失效（会话到期，或部署换了数据路径导致旧令牌在服务端
+   * 已不存在）。这时如果只抛错，界面会停留在「看起来还登录着、但每个操作都失败」
+   * 的状态 —— 演示时最容易卡在这里。现在统一回到登录页并给出原因。
+   */
+  useEffect(() => {
+    onUnauthorized(() => {
+      clearSession();
+      setNotice({ message: "登录已失效，请重新登录。", error: true });
+    });
+    return () => onUnauthorized(null);
+    // clearSession 只操作 ref 与 setState，捕获首帧闭包即可；无需加入依赖
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   async function job(key: string, action: () => void | Promise<void>) {
     if (running.current.has(key)) return;
     running.current.add(key);
