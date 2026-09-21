@@ -134,7 +134,23 @@ export const RubricEvaluationPanel: React.FC<RubricEvaluationPanelProps> = ({
                   <div className="lb-item-title">{g.title || g.rubricId}</div>
                   <div className="lb-item-tags">
                     {attention && <span className={`lb-chip ${attention.tone}`}>{attention.text}</span>}
-                    {g.page ? <span className="lb-locate">第 {g.page} 页</span> : null}
+                    {g.page ? (
+                      // 证据引用已带可解析的 locator：精确到段时给出视觉标记，
+                      // 完整定位串与文档版本放在 title 里，不占版面
+                      <span
+                        className={`lb-locate${g.evidenceRef?.kind === "paragraph" ? " precise" : ""}`}
+                        title={
+                          g.evidenceRef
+                            ? `定位 ${g.evidenceRef.locator}` +
+                              (g.evidenceRef.documentVersionId
+                                ? ` · 版本 ${g.evidenceRef.documentVersionId.slice(0, 8)}`
+                                : "")
+                            : undefined
+                        }
+                      >
+                        第 {g.page} 页
+                      </span>
+                    ) : null}
                   </div>
                 </div>
 

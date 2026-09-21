@@ -349,6 +349,8 @@ export async function extractReportContent(submission, storage = null, options =
     diagrams: [],
     hasImages: images.length > 0,
     embedded: parsed.embedded,
+    // 文档版本标识：blobId 是内容哈希，天然就是「这条结论依据哪一版报告」的答案
+    documentVersionId: submission.blobId || null,
     structuredPages
   };
 }
@@ -382,7 +384,7 @@ function buildParsedContent(report) {
  * 1. 严禁信任大模型口算的 totalScore，必须由后端程序严格遍历小项累加！
  * 2. 各小项得分必须严格限制在 [0, rubricItem.max] 范围之内。
  */
-export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}) {
+export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}, options = {}) {
   const rawItems = rawEvaluation.items || rawEvaluation.rubricChecks || rawEvaluation.grades || [];
   const summary = rawEvaluation.summary || rawEvaluation.summaryReview || "实验报告评阅完成。";
 
@@ -460,6 +462,13 @@ export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}) {
       page,
       comment,
       evidence,
+      // 可定位引用：回答「依据哪一版报告的哪个位置」，而不只是一段孤立文字
+      evidenceRef: buildEvidenceRef({
+        documentVersionId: options.documentVersionId || null,
+        page,
+        quote: evidence,
+        structuredPages: options.structuredPages || null
+      }),
       judgment,
       /** model = 模型明确给出的判定；score_fallback = 模型未给，由分数兜底 */
       judgmentSource,
@@ -528,6 +537,45 @@ function decideAttentionLevel({ judgment, missingPoints }) {
   if (missingPoints.length === 1) return "needs_attention";
   if (judgment === "partially_satisfied" || judgment === "not_satisfied") return "needs_attention";
   return "clear";
+}
+
+/**
+ * 组装可定位的证据引用（返工单 P1-3 方向）。
+ *
+ * locator 采用可解析的键值形式：
+ *   - `page=N`          只定位到页
+ *   - `page=N&block=M`  进一步定位到该页第 M 段（用模型给出的原文摘录反查）
+ *
+ * 反查不到就退回页码级 —— 定位不到就说定位不到，不硬凑一个 block 数字出来。
+ */
+function buildEvidenceRef({ documentVersionId, page, quote, structuredPages }) {
+  const ref = {
+    documentVersionId: documentVersionId || null,
+    locator: `page=${page}`,
+    kind: "page",
+    quote: String(quote || "").trim(),
+    assetId: null
+  };
+
+  const needle = normalizeForMatch(ref.quote).slice(0, 24);
+  if (!needle) return ref;
+
+  const pageEntry = Array.isArray(structuredPages) ? structuredPages[page - 1] : null;
+  const paragraphs = Array.isArray(pageEntry?.paragraphs) ? pageEntry.paragraphs : [];
+  const blockIndex = paragraphs.findIndex((p) => normalizeForMatch(p).includes(needle));
+
+  if (blockIndex >= 0) {
+    ref.locator = `page=${page}&block=${blockIndex + 1}`;
+    ref.kind = "paragraph";
+  }
+  return ref;
+}
+
+/** 匹配用归一化：去掉空白与常见中英文标点，避免因排版差异漏匹配 */
+function normalizeForMatch(text) {
+  return String(text || "")
+    .replace(/\s+/g, "")
+    .replace(/[，。；：、（）「」【】“”‘’"'.,;:()[\]!?！？]/g, "");
 }
 
 /**
@@ -624,7 +672,8 @@ export class AutoGraderPipelineService {
       // 6. 后端程序严格求和与各小项 [0, max] 边界保护
       const { grades, totalScore, maxScore, summary } = calculateGradesAndTotal(
         normalizedRubric,
-        rawEvaluation
+        rawEvaluation,
+        { documentVersionId: report.documentVersionId, structuredPages: report.structuredPages }
       );
 
       // 7. 评阅成功：原子更新状态为 review（进入待教师复核状态）

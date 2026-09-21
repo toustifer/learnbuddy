@@ -205,12 +205,30 @@ export interface ServerGrade {
   page?: number;
   comment?: string;
   evidence?: string;
-  judgment?: "satisfied" | "partially_satisfied" | "not_satisfied" | "professional_judgment";
+  /** 可定位的证据引用：回答「依据哪一版报告的哪个位置」 */
+  evidenceRef?: EvidenceRef;
+  judgment?: "satisfied" | "partially_satisfied" | "not_satisfied" | "unable_to_judge" | "professional_judgment";
+  /** model = 模型给出的判定；score_fallback = 模型未给、由分数兜底 */
+  judgmentSource?: "model" | "score_fallback";
   /** 后端 coverage 以嵌套对象返回，面板消费前需摊平成 coveredPoints/missingPoints */
   coverage?: { coveredPoints?: string[]; missingPoints?: string[] };
   coveredPoints?: string[];
   missingPoints?: string[];
   attentionLevel?: "clear" | "needs_attention" | "review_required";
+}
+
+/** 可定位的证据引用（与后端 buildEvidenceRef 一一对应） */
+export interface EvidenceRef {
+  /** 文档版本：blobId（内容哈希）；无原件时为 null */
+  documentVersionId: string | null;
+  /** 可解析的定位符，如 "page=2" 或 "page=2&block=5" */
+  locator: string;
+  /** 定位粒度：page = 只到页；paragraph = 已精确定位到段 */
+  kind: "page" | "paragraph";
+  /** 原文摘录 */
+  quote: string;
+  /** 关联的内嵌图资产 */
+  assetId?: string | null;
 }
 export interface ServerReview {
   submissionId: string;

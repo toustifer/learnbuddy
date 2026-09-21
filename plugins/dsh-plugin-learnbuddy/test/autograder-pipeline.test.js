@@ -658,6 +658,55 @@ test("AutoGrader - 关注级别与分数解耦", () => {
   assert.equal(clean.attentionLevel, "clear");
 });
 
+test("AutoGrader - 证据升级为可定位引用", () => {
+  const rubric = [{ id: "r0", title: "执行计划分析", max: 30, criterion: "解释观察结果。" }];
+  const structuredPages = [
+    {
+      pageNumber: 1,
+      heading: "实验记录",
+      paragraphs: ["先准备测试数据与目标查询。", "使用 EXPLAIN 查看执行计划，记录访问类型与扫描行数。"]
+    }
+  ];
+  const raw = {
+    items: [
+      {
+        rubricId: "r0",
+        score: 20,
+        page: 1,
+        evidence: "使用 EXPLAIN 查看执行计划，记录访问类型与扫描行数。"
+      }
+    ]
+  };
+
+  const { grades } = calculateGradesAndTotal(rubric, raw, {
+    documentVersionId: "e38a62dd…b6ed.docx",
+    structuredPages
+  });
+  const ref = grades[0].evidenceRef;
+
+  assert.equal(ref.documentVersionId, "e38a62dd…b6ed.docx", "必须能回答「依据哪一版报告」");
+  assert.equal(ref.kind, "paragraph", "摘录能在原文里反查到段落时应精确到段");
+  assert.equal(ref.locator, "page=1&block=2", "locator 必须是可解析的键值形式");
+  assert.ok(ref.quote.includes("EXPLAIN"), "引用要带原文摘录");
+});
+
+test("AutoGrader - 摘录反查不到时退回页码级，不硬凑位置", () => {
+  const rubric = [{ id: "r0", title: "性能解释与总结", max: 20, criterion: "给出结论。" }];
+  const structuredPages = [{ pageNumber: 1, heading: "", paragraphs: ["与摘录完全无关的内容"] }];
+  const raw = {
+    items: [{ rubricId: "r0", score: 10, page: 1, evidence: "报告里并不存在的这句话，用于测试反查失败" }]
+  };
+
+  const { grades } = calculateGradesAndTotal(rubric, raw, {
+    documentVersionId: "v2.docx",
+    structuredPages
+  });
+  const ref = grades[0].evidenceRef;
+
+  assert.equal(ref.locator, "page=1", "定位不到就只报页码，不能编一个 block 数字");
+  assert.equal(ref.kind, "page");
+});
+
 test(
   "HTTP API - 批注 CRUD 端点（待确认数据模型后实现）",
   { skip: "端点未实现；依据返工单 §5，字段投影归属涉及 D2 边界，需先与团队确认再动手" },

@@ -6575,6 +6575,15 @@ figcaption,
 .lb-item-title { font-size: 13px; font-weight: 600; color: var(--ink); line-height: 1.6; }
 .lb-item-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 5px; }
 .lb-locate { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--green); font-weight: 500; }
+/* 证据已精确定位到段落时，用一个小圆点作视觉标记（区别于只定位到页） */
+.lb-locate.precise::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--green);
+  display: inline-block;
+}
 
 .lb-score-box { display: flex; align-items: center; gap: 5px; background: #f4f7f2; border: 1px solid var(--line); border-radius: 8px; padding: 3px 6px; flex-shrink: 0; }
 .lb-score-box input {
