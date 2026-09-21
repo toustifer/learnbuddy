@@ -19,7 +19,7 @@
 
 import { MultimodalLLMClient } from "./llm.js";
 import { AutoGraderEngine } from "./grader.js";
-import { MaterialParserService } from "./material-parser.js";
+import { parseMaterial } from "./material-parser.js";
 
 /**
  * 标杆计算机网络实验评分表（Wireshark 协议分析与三次握手）
