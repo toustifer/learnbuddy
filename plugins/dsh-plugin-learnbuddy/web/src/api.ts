@@ -38,6 +38,23 @@ export function getAccessToken() {
   return accessToken;
 }
 
+/**
+ * 会话失效通知（401 自动恢复）。
+ *
+ * 为什么需要：令牌可能在**运行到一半**失效 —— 会话到期，或者部署换了数据路径
+ * 导致旧令牌在服务端已经不存在。此前这种请求只抛一个普通错误，界面仍显示
+ * 「已登录」，但每个操作都在报错，**演示时最容易被这个卡住**。
+ *
+ * 现在：401 且**本次请求确实带了令牌**时，清掉令牌并通知上层回到登录页。
+ * 只在「有令牌 → 令牌失效」这一跳通知一次，所以登录接口本身的 401（密码错）
+ * 与之后的无令牌请求都不会反复触发。
+ */
+let unauthorizedHandler: (() => void) | null = null;
+
+export function onUnauthorized(handler: (() => void) | null) {
+  unauthorizedHandler = handler;
+}
+
 export async function request<T>(
   path: string,
   init: RequestInit = {},
@@ -67,11 +84,18 @@ export async function request<T>(
         res.status,
       );
     }
-    if (!res.ok || data?.ok !== true)
+    if (!res.ok || data?.ok !== true) {
+      // 会话失效：清令牌 + 通知上层回登录页。
+      // 登录/登出接口自身的 401 不算会话失效（那是密码错），排除掉。
+      if (res.status === 401 && !path.startsWith("/auth/") && accessToken) {
+        setAccessToken("");
+        unauthorizedHandler?.();
+      }
       throw new ApiError(
         data?.error || `请求失败（HTTP ${res.status}）`,
         res.status,
       );
+    }
     return data as T;
   } catch (e) {
     if (e instanceof ApiError) throw e;

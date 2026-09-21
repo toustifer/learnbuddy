@@ -6,8 +6,10 @@ import {
   listMaterials,
   loginAccount,
   parseErrorText,
+  onUnauthorized,
   request,
   setAccessToken,
+  getAccessToken,
   uploadMaterial,
 } from "./api";
 import { freshState, users } from "./seed";
@@ -265,5 +267,93 @@ describe("teacher review validation uses the server rubric", () => {
         rubric,
       ),
     ).toBe(true);
+  });
+});
+
+describe("会话失效自动恢复（401）", () => {
+  it("带令牌的普通请求遇到 401：清令牌并通知上层回登录页", async () => {
+    const on401 = vi.fn();
+    onUnauthorized(on401);
+    setAccessToken("tk-expired");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        response({ ok: false, code: "UNAUTHENTICATED", error: "未登录：缺少访问令牌" }, 401),
+      ),
+    );
+
+    await expect(listMaterials()).rejects.toBeInstanceOf(ApiError);
+
+    expect(on401).toHaveBeenCalledTimes(1);
+    expect(getAccessToken()).toBe("");
+    onUnauthorized(null);
+  });
+
+  it("登录接口自身的 401（密码错）不算会话失效，不得触发回登录页", async () => {
+    const on401 = vi.fn();
+    onUnauthorized(on401);
+    setAccessToken("tk-old");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        response({ ok: false, code: "UNAUTHENTICATED", error: "用户名或密码不正确" }, 401),
+      ),
+    );
+
+    await expect(loginAccount("teacher.chen", "wrong")).rejects.toBeInstanceOf(ApiError);
+
+    expect(on401).not.toHaveBeenCalled();
+    onUnauthorized(null);
+  });
+
+  it("本来就没带令牌时遇到 401，不触发（避免登录页上反复弹提示）", async () => {
+    const on401 = vi.fn();
+    onUnauthorized(on401);
+    setAccessToken("");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        response({ ok: false, code: "UNAUTHENTICATED", error: "未登录" }, 401),
+      ),
+    );
+
+    await expect(listMaterials()).rejects.toBeInstanceOf(ApiError);
+
+    expect(on401).not.toHaveBeenCalled();
+    onUnauthorized(null);
+  });
+
+  it("令牌被清掉后，后续请求不再重复触发（只在「失效那一跳」通知一次）", async () => {
+    const on401 = vi.fn();
+    onUnauthorized(on401);
+    setAccessToken("tk-expired");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        response({ ok: false, code: "UNAUTHENTICATED", error: "未登录" }, 401),
+      ),
+    );
+
+    await expect(listMaterials()).rejects.toBeInstanceOf(ApiError);
+    await expect(listMaterials()).rejects.toBeInstanceOf(ApiError);
+
+    expect(on401).toHaveBeenCalledTimes(1);
+    onUnauthorized(null);
+  });
+
+  it("非 401 的失败不触发会话失效", async () => {
+    const on401 = vi.fn();
+    onUnauthorized(on401);
+    setAccessToken("tk-ok");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(response({ ok: false, error: "作业不存在: lab-x" }, 404)),
+    );
+
+    await expect(listMaterials()).rejects.toBeInstanceOf(ApiError);
+
+    expect(on401).not.toHaveBeenCalled();
+    expect(getAccessToken()).toBe("tk-ok");
+    onUnauthorized(null);
   });
 });
