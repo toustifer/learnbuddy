@@ -585,6 +585,79 @@ test("AutoGrader - 正文过短的报告记为 partial 而不是完全成功", a
   assert.ok(report.warnings[0].includes("字符"));
 });
 
+test("AutoGrader - 判定字段采纳模型输出，不由分数反推", () => {
+  const rubric = [{ id: "r0", title: "数据准备与查询设计", max: 20, criterion: "过程可复现。" }];
+  const raw = {
+    summary: "小结",
+    items: [
+      {
+        rubricId: "r0",
+        score: 10, // 分数只有一半：若按分数反推会得到 partially_satisfied
+        judgment: "satisfied", // 模型明确判定为达成
+        coveredPoints: ["列出了测试表的字段定义与约二十万行数据规模"],
+        missingPoints: [],
+        page: 1,
+        comment: "环境与数据准备交代清楚。",
+        evidence: "写入约二十万行数据，分别在建索引前后执行同一组查询。"
+      }
+    ]
+  };
+
+  const { grades } = calculateGradesAndTotal(rubric, raw);
+  const g = grades[0];
+
+  assert.equal(g.score, 10, "分数仍由程序按小项取值，不受判定字段影响");
+  assert.equal(g.judgment, "satisfied", "judgment 必须取模型输出，不能由分数反推");
+  assert.equal(g.judgmentSource, "model");
+  assert.deepEqual(g.coverage.coveredPoints, ["列出了测试表的字段定义与约二十万行数据规模"]);
+  assert.deepEqual(g.coverage.missingPoints, []);
+});
+
+test("AutoGrader - 模型未给判定时如实留空，不套模板句", () => {
+  const rubric = [{ id: "r0", title: "执行计划分析", max: 30, criterion: "解释观察结果。" }];
+  const raw = { summary: "小结", items: [{ rubricId: "r0", score: 15, page: 2, comment: "评语" }] };
+
+  const { grades } = calculateGradesAndTotal(rubric, raw);
+  const g = grades[0];
+
+  assert.equal(g.judgmentSource, "score_fallback", "模型未给判定时应显式标记来源为分数兜底");
+  assert.deepEqual(g.coverage.coveredPoints, [], "模型没给覆盖点就必须留空");
+  assert.deepEqual(g.coverage.missingPoints, []);
+
+  // 关键：不能出现「完全达成「XXX」所要求的…」这类标题拼接文案
+  const serialized = JSON.stringify(g.coverage);
+  assert.ok(!serialized.includes("完全达成"), "不得用模板句冒充具体分析");
+  assert.ok(!serialized.includes("基本完成"), "不得用模板句冒充具体分析");
+});
+
+test("AutoGrader - 关注级别与分数解耦", () => {
+  const rubric = [{ id: "r0", title: "性能解释与总结", max: 20, criterion: "给出结论。" }];
+
+  // 0 分但依据明确（报告确实没做）→ 值得关注，而不是「需人工裁决」
+  const zero = calculateGradesAndTotal(rubric, {
+    items: [{ rubricId: "r0", score: 0, judgment: "not_satisfied", missingPoints: ["未给出任何结论或改进方向"] }]
+  }).grades[0];
+  assert.equal(zero.attentionLevel, "needs_attention", "低分本身不等于需要人工裁决");
+
+  // 依据不足 → 需人工裁决（即便分数不低）
+  const unable = calculateGradesAndTotal(rubric, {
+    items: [{ rubricId: "r0", score: 18, judgment: "unable_to_judge" }]
+  }).grades[0];
+  assert.equal(unable.attentionLevel, "review_required", "依据不足才需要人工介入");
+
+  // 缺失点较多 → 需人工裁决
+  const manyMissing = calculateGradesAndTotal(rubric, {
+    items: [{ rubricId: "r0", score: 12, judgment: "partially_satisfied", missingPoints: ["缺少对比数据", "未解释瓶颈原因"] }]
+  }).grades[0];
+  assert.equal(manyMissing.attentionLevel, "review_required");
+
+  // 干净达成 → 表现明确
+  const clean = calculateGradesAndTotal(rubric, {
+    items: [{ rubricId: "r0", score: 20, judgment: "satisfied", missingPoints: [] }]
+  }).grades[0];
+  assert.equal(clean.attentionLevel, "clear");
+});
+
 test(
   "HTTP API - 批注 CRUD 端点（待确认数据模型后实现）",
   { skip: "端点未实现；依据返工单 §5，字段投影归属涉及 D2 边界，需先与团队确认再动手" },

@@ -138,6 +138,11 @@ export function resolveProviderDefaults(providerId, env = process.env) {
  */
 export function resolveLLMConfig(env = process.env) {
   const e = env || {};
+  // 注意：这里只认本模块约定的变量名。若部署环境用的是别的前缀（例如 LML_AI_API_KEY），
+  // 请在启动进程时显式映射，例如：
+  //   LLM_API_KEY="$LML_AI_API_KEY" node server.js
+  // 不要把外部前缀直接写进本模块 —— 否则测试环境也会被外部变量"意外接通"，
+  // 导致单元测试真的去请求线上模型（变慢且结果不可复现）。
   const explicitKey = pick(e.LLM_API_KEY);
   const requested = pick(e.LLM_PROVIDER).toLowerCase();
 

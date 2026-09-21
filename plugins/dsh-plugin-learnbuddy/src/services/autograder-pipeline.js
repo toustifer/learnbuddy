@@ -436,20 +436,22 @@ export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}) {
       ? String(matched.evidence).trim()
       : `核验报告第 ${page} 页相关文字描述与实验截图证据。`;
 
-    // v0.2: 结构化覆盖分析与关注级别计算
-    const isFull = itemScore >= maxScore;
-    const isPartial = itemScore > 0 && itemScore < maxScore;
-    const judgment = isFull ? "satisfied" : (isPartial ? "partially_satisfied" : "not_satisfied");
-    const attentionLevel = judgment === "satisfied" ? "clear" : (judgment === "partially_satisfied" ? "needs_attention" : "review_required");
+    // v0.3: 判定字段优先采纳模型输出；缺什么就如实留空，
+    // 不再由分数反推、不再用标题套模板（返工单 P1：judgment / 覆盖度 / 关注级别要与分数解耦）
+    const modelJudgment = normalizeJudgment(matched?.judgment);
+    // 分数仅作为「模型没给判定」时的兜底，并显式标记来源，避免看起来像模型判断
+    const scoreFallback = itemScore >= maxScore
+      ? "satisfied"
+      : (itemScore > 0 ? "partially_satisfied" : "not_satisfied");
+    const judgment = modelJudgment || scoreFallback;
+    const judgmentSource = modelJudgment ? "model" : "score_fallback";
 
-    const coveredPoints = isFull
-      ? [`完全达成「${rubricItem.title}」所要求的实验指标与实验操作规范`]
-      : (isPartial ? [`基本完成「${rubricItem.title}」主要流程`] : []);
-    const missingPoints = isFull
-      ? []
-      : (isPartial
-          ? [`建议补充「${rubricItem.title}」更完整的边界测试或深入机制分析`]
-          : [`未在报告中明确检测到「${rubricItem.title}」相关实质性实验证据或关键操作`]);
+    // 覆盖点只接受模型给出的具体子要求；模型没给就留空，不编模板句
+    const coveredPoints = cleanCoveragePoints(matched?.coveredPoints ?? matched?.coverage?.coveredPoints);
+    const missingPoints = cleanCoveragePoints(matched?.missingPoints ?? matched?.coverage?.missingPoints);
+
+    // 关注级别按内容信号分类，与分数高低解耦
+    const attentionLevel = decideAttentionLevel({ judgment, missingPoints });
 
     grades.push({
       rubricId: rubricItem.id,
@@ -459,6 +461,8 @@ export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}) {
       comment,
       evidence,
       judgment,
+      /** model = 模型明确给出的判定；score_fallback = 模型未给，由分数兜底 */
+      judgmentSource,
       attentionLevel,
       coverage: {
         coveredPoints,
@@ -473,6 +477,57 @@ export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}) {
     maxScore: totalMaxScore,
     summary
   };
+}
+
+/** 判定枚举：新增 unable_to_judge —— 报告未涉及该评分项时的诚实选项，而不是硬塞一个档位 */
+const JUDGMENT_VALUES = new Set([
+  "satisfied",
+  "partially_satisfied",
+  "not_satisfied",
+  "unable_to_judge"
+]);
+
+function normalizeJudgment(raw) {
+  const value = String(raw ?? "").trim().toLowerCase();
+  return JUDGMENT_VALUES.has(value) ? value : null;
+}
+
+/**
+ * 清理模型给出的覆盖点：去空、去重、限长限条。
+ *
+ * 关键纪律：**不做任何补全**。模型没给就返回空数组，
+ * 绝不用「完全达成 XXX」「基本完成 XXX 主要流程」这类模板句冒充具体分析 ——
+ * 那种文案读起来像分析，实际上是标题拼接，正是上一版被诟病的地方。
+ */
+function cleanCoveragePoints(raw, maxItems = 6, maxLen = 80) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const item of raw) {
+    const text = String(item ?? "").trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text.length > maxLen ? `${text.slice(0, maxLen)}…` : text);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
+/**
+ * 关注级别：按**内容信号**分类，而不是按分数高低。
+ *
+ * - 依据不足（unable_to_judge）或缺失点较多 → 需人工裁决
+ * - 有缺失点 / 部分达成 / 明确未达成 → 值得关注
+ * - 其余 → 表现明确
+ *
+ * 这样「低分」本身不会自动等于「需裁决」，避免把判断依据不足误标成学生的问题。
+ */
+function decideAttentionLevel({ judgment, missingPoints }) {
+  if (judgment === "unable_to_judge") return "review_required";
+  if (missingPoints.length >= 2) return "review_required";
+  if (missingPoints.length === 1) return "needs_attention";
+  if (judgment === "partially_satisfied" || judgment === "not_satisfied") return "needs_attention";
+  return "clear";
 }
 
 /**
@@ -748,19 +803,33 @@ export class AutoGraderPipelineService {
 请对照给定的实验评分标准表（Rubric），逐项审查学生报告中的实验拓扑、操作步骤、图文证据与总结分析。
 严禁直接提供代写或伪造数据，给出客观给分、定位证据页码并撰写具体指导评语。
 
+【最重要的一条纪律】所有结论必须来自这份报告的真实内容：
+- 只能引用报告中**实际出现**的技术名词、步骤与数据。报告里没有提到的概念，一律不得写进 summary、comment、evidence 或覆盖点。
+- 不要套用同类实验的常见结论。例如报告全文没有抓包内容，就不应出现「抓包」「三次握手」这类描述。
+- 判断依据不足时如实说明，不要用推测填补空缺。
+
 请以合法 JSON 格式输出判定结果：
 {
-  "summary": "总体诊断评语（指出优点、主要失分项与改进方向）",
+  "summary": "总体诊断评语（指出优点、主要失分项与改进方向；只描述本报告实际写到的内容）",
   "items": [
     {
       "rubricId": "评分项 id，如 network-r0",
       "score": 18,
       "page": 1,
+      "judgment": "satisfied | partially_satisfied | not_satisfied | unable_to_judge",
+      "coveredPoints": ["报告中确实做到了的具体点，逐条列出"],
+      "missingPoints": ["评分标准要求、但报告中确实缺失的具体点"],
       "comment": "该采分点的具体评价与批注",
-      "evidence": "报告中对应的图文证据引用或文字摘要"
+      "evidence": "报告中对应的原文片段（直接摘录，不要改写）"
     }
   ]
-}`;
+}
+
+字段纪律：
+- judgment 必须**依据报告内容**判断，不得由分数反推；报告完全没有涉及该评分项时给 unable_to_judge。
+- coveredPoints / missingPoints 必须落到**具体子要求**，不得使用「完全达成 XXX」「基本完成 XXX 主要流程」这类概括话术；
+  确实没有可写的就返回空数组，不要为了填满而编造。
+- evidence 必须是报告里的**原文摘录**；找不到对应原文时留空字符串。`;
 
     const userPrompt = `【本次实验评分标准】：
 ${JSON.stringify(normalizedRubric, null, 2)}
@@ -785,6 +854,19 @@ ${report.diagrams?.length ? `\n- 报告附图/图表证据:\n${report.diagrams.m
       // 显式抛错以走下方规则判定降级（strictLLM 模式下则直接上抛给调用方）。
       if (resp.ok === false || !String(resp.content || "").trim()) {
         throw new Error(resp.error || "大模型返回空 content，无法解析评分结果");
+      }
+
+      // 【关键防线】未配置密钥时 llm.js 会走「智能 Mock 兜底」，它返回的是一套
+      // 与本次报告**毫无关系**的固定样例（写死的计网评分：拓扑/Wireshark/三次握手/RST）。
+      // 这种结果一旦入库，就是标准的「看起来正常的假内容」（返工单 P1-4），
+      // 且演示时必然穿帮。所以这里必须显式失败，绝不静默当成模型判断。
+      if (resp.mock === true) {
+        const err = new Error(
+          "模型未接入：当前为 Mock 兜底响应，与本次报告内容无关，不能作为评分依据。" +
+          "请配置 LLM_API_KEY（或 DEEPSEEK_API_KEY）后重试。"
+        );
+        err.errorCode = "LLM_NOT_CONFIGURED";
+        throw err;
       }
 
       let parsed = null;
