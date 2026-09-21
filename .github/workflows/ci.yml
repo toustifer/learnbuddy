@@ -5,7 +5,6 @@
 #
 # 门禁分两层：
 #   1) 硬门禁（阻塞）：语法检查、模块加载检查、后端测试、前端测试、前端构建
-#   2) 已知未实现项（非阻塞）：单独跑，失败会显示在日志里但不拦合并
 #
 # 核心是「模块加载检查」：它逐个 import src/ 下每个模块。fd2542e 引入的
 # `import { parseMaterial }` 指向一个不存在的导出，会让 4 个模块整体加载失败；
@@ -84,21 +83,11 @@ jobs:
           '
 
       # ---- 硬门禁 3：后端测试（阻塞）----
-      # 用 --test-skip-pattern 排除下面「已知未实现项」那一条，
-      # 使这一步的失败一定是真回归。
+      # 2026-09-21：批注端点已实现（合并 main 时补齐），原先「已知未实现项」的
+      # skip 与 continue-on-error 豁免**已全部取消** —— 现在跑全量、无例外，
+      # 任何失败都是真回归。
       - name: 后端测试
-        run: node --test --test-skip-pattern="POST /grader/grade-submission" test/*.test.js test/*.test.mjs
-
-      # ---- 已知未实现项（非阻塞，仅让缺口在日志里可见）----
-      # 缺口：POST /submissions/:id/annotations 端点从未实现，
-      #       而 fd2542e 的测试断言它存在（用例「...全链路」中的批注 CRUD 段）。
-      #       该功能涉及 D2 的字段投影边界，属产品决策，未擅自实现。
-      # 二选一处理后，请把 continue-on-error 去掉：
-      #   a) 实现批注端点（按 D2 规则做学生字段投影）；或
-      #   b) 将该用例显式标记 skip，并在用例内写明原因。
-      - name: 已知未实现项（批注端点，非阻塞）
-        continue-on-error: true
-        run: node --test --test-name-pattern="POST /grader/grade-submission" test/*.test.js test/*.test.mjs
+        run: node --test test/*.test.js test/*.test.mjs
 
   frontend:
     name: 前端 · 测试 / 构建

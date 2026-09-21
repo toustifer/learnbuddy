@@ -24,6 +24,7 @@ import { DatabaseStore } from "../db/store.js";
 import { StorageService, defaultStorage, getMimeType } from "../services/storage.js";
 import { verifyPassword, readBearerToken, readQueryToken, resolveActorFromRequest } from "../services/auth.js";
 import { ERROR_CODES, classifyError, withEnvelope } from "../contracts/envelope.js";
+import { isGradeVisible } from "../contracts/projection.js";
 import {
   deriveDocumentVersionId,
   evidenceRefsFromMaterialContext,
@@ -1019,6 +1020,80 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         return sendJson(res, resolveErrorStatus(err.message), {
           ok: false,
           error: err.message
+        });
+      }
+    }
+
+    // ==========================================
+    // 7.8 提交报告批注 (Annotations CRUD)
+    //     GET  /api/learnbuddy/submissions/:id/annotations
+    //     POST /api/learnbuddy/submissions/:id/annotations
+    // ==========================================
+    // 身份绑定 + D2 补齐（2026-09-21 合并 main 时修）：
+    // 原先两个方法都调 `store.getSubmission(id)`（**不传 userId**），
+    // 而 store 在不传身份时不做任何权限判断 ⇒ 任何登录用户都能读写任意提交的批注。
+    // 另外批注的 comment 属于 D2 的「详细评语与依据」，教师确认前不得给学生看。
+    const submissionAnnoMatch = pathname.match(/^\/api\/learnbuddy\/submissions\/([^/]+)\/annotations$/);
+    if (submissionAnnoMatch) {
+      const submissionId = decodeURIComponent(submissionAnnoMatch[1]);
+
+      const annoAuth = requireActor(req);
+      if (!annoAuth.ok) {
+        return sendJson(res, annoAuth.status, { ok: false, error: annoAuth.error });
+      }
+
+      // 权限探针：带身份读取，store 会校验归属与课程关系，无权时返回 null。
+      // 无权与不存在**都返回 404**，避免用状态码差异探测某份提交是否存在。
+      const annoAllowed = store.getSubmission(submissionId, annoAuth.user.id);
+      if (!annoAllowed) {
+        return sendJson(res, 404, { ok: false, error: "提交记录不存在" });
+      }
+
+      if (req.method === "GET") {
+        // D2 用的是**投影契约里同一个可见性判据**（isGradeVisible），
+        // 批注与 grades/summary 走同一条规则，不再各写一套。
+        const rawSubmission = store.getSubmission(submissionId);
+        const annotations = isGradeVisible(rawSubmission, annoAuth.user)
+          ? (rawSubmission.annotations || [])
+          : [];
+        return sendJson(res, 200, {
+          ok: true,
+          submissionId,
+          annotations
+        });
+      }
+
+      if (req.method === "POST") {
+        // 只有教师可以批注报告
+        if (annoAuth.user.role !== "teacher") {
+          return sendJson(res, 403, {
+            ok: false,
+            error: "权限不足：只有教师可以批注报告"
+          });
+        }
+
+        const body = await parseJsonBody(req);
+        const rawSubmission = store.getSubmission(submissionId);
+        if (!rawSubmission) {
+          return sendJson(res, 404, { ok: false, error: "提交记录不存在" });
+        }
+        const existingList = Array.isArray(rawSubmission.annotations)
+          ? [...rawSubmission.annotations]
+          : [];
+        const newAnnotation = {
+          id: body.id || `anno-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          page: typeof body.page === "number" ? body.page : 1,
+          quote: body.quote || "",
+          comment: body.comment || "",
+          color: body.color || "yellow",
+          createdAt: new Date().toISOString()
+        };
+        existingList.push(newAnnotation);
+        store.updateSubmission(submissionId, { annotations: existingList });
+        return sendJson(res, 200, {
+          ok: true,
+          submissionId,
+          annotation: newAnnotation
         });
       }
     }

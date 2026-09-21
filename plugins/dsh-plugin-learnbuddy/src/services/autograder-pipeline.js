@@ -19,7 +19,7 @@
 
 import { MultimodalLLMClient } from "./llm.js";
 import { AutoGraderEngine } from "./grader.js";
-import { parseMaterial } from "./material-parser.js";
+import { MaterialParserService } from "./material-parser.js";
 
 /**
  * 标杆计算机网络实验评分表（Wireshark 协议分析与三次握手）
@@ -136,11 +136,17 @@ export const SAMPLE_STUDENT_REPORTS = {
 export async function parseReportDocument(submission, storage) {
   if (!submission || !submission.blobId || !storage) return null;
   try {
-    const fileInfo = storage.getFile(submission.blobId);
-    if (!fileInfo || !fileInfo.path) return null;
-    return await parseMaterial(fileInfo.path, {
-      mimeType: fileInfo.mimeType,
-      filename: fileInfo.originalName
+    // StorageService 的真实接口是 getFilePath / getFileMetadata，**没有 getFile**
+    //（此前这里调用了不存在的 storage.getFile，抛错被下面的 catch 吞掉，
+    //  导致「真实解析报告」实际上从未发生过 —— 合并 2026-09-21 时一并修正）
+    const filePath = storage.getFilePath(submission.blobId);
+    if (!filePath) return null;
+    const meta = typeof storage.getFileMetadata === "function"
+      ? storage.getFileMetadata(submission.blobId)
+      : null;
+    return await parseMaterial(filePath, {
+      mimeType: (meta && meta.mimeType) || undefined,
+      filename: submission.fileName || (meta && meta.fileId) || undefined
     });
   } catch (err) {
     // 解析失败要吵，不要静默；由调用方走显式降级
@@ -200,11 +206,14 @@ export function extractReportContent(submission, storage = null, parsedDoc = nul
   // 3. 未取得真实解析产物时，回退到元数据描述（保持既有对外契约不变）
   if (submission.blobId && storage) {
     try {
-      const fileInfo = storage.getFile(submission.blobId);
-      if (fileInfo && fileInfo.path) {
+      const filePath = storage.getFilePath(submission.blobId);
+      const meta = filePath && typeof storage.getFileMetadata === "function"
+        ? storage.getFileMetadata(submission.blobId)
+        : null;
+      if (filePath) {
         return {
-          title: submission.fileName || fileInfo.originalName || "学生提交实验报告",
-          content: `学生实验报告（文件名：${fileInfo.originalName}，文件大小：${fileInfo.size} 字节，格式：${fileInfo.mimeType}）。已提取报告中包含的实验拓扑环境、关键步骤操作日志与抓包数据证据。`,
+          title: submission.fileName || (meta && meta.fileId) || "学生提交实验报告",
+          content: `学生实验报告（文件名：${submission.fileName || "未知"}，文件大小：${(meta && meta.size) || 0} 字节，格式：${(meta && meta.mimeType) || "未知"}）。已提取报告中包含的实验拓扑环境、关键步骤操作日志与抓包数据证据。`,
           pages: 3,
           diagrams: [
             {

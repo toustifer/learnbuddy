@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS submissions (
   summary TEXT DEFAULT '',
   history TEXT DEFAULT '[]',
   failure TEXT,
+  annotations TEXT DEFAULT '[]',
   FOREIGN KEY (assignment_id) REFERENCES assignments(id),
   FOREIGN KEY (student_id) REFERENCES users(id)
 );
@@ -570,7 +571,9 @@ export function initSchema(db) {
   db.exec(SCHEMA_SQL);
   // 老库增量迁移：CREATE TABLE IF NOT EXISTS 不会给已存在的表补列
   migrateMaterialsParseErrorColumns(db);
+  // 两边各加了一个迁移，都要保留（幂等，重复执行无害）
   migrateUserAuthColumns(db);
+  migrateSubmissionsAnnotationsColumn(db);
 }
 
 /**
@@ -694,5 +697,28 @@ export function seedDatabase(db, seedData = {}) {
       JSON.stringify(s.history || []),
       s.failure || null
     );
+  }
+}
+
+/**
+ * 幂等补齐 submissions 表的 annotations 列
+ */
+export function migrateSubmissionsAnnotationsColumn(db) {
+  const table = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'submissions'")
+    .get();
+  if (!table) return;
+
+  const existing = db
+    .prepare("PRAGMA table_info(submissions)")
+    .all()
+    .map((row) => row.name);
+
+  if (!existing.includes("annotations")) {
+    try {
+      db.exec("ALTER TABLE submissions ADD COLUMN annotations TEXT DEFAULT '[]'");
+    } catch (err) {
+      if (!/duplicate column name/i.test(err.message || "")) throw err;
+    }
   }
 }
