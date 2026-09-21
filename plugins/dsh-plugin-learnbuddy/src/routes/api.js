@@ -24,6 +24,13 @@ import { DatabaseStore } from "../db/store.js";
 import { StorageService, defaultStorage, getMimeType } from "../services/storage.js";
 import { verifyPassword, readBearerToken, readQueryToken, resolveActorFromRequest } from "../services/auth.js";
 import { ERROR_CODES, classifyError, withEnvelope } from "../contracts/envelope.js";
+import {
+  deriveDocumentVersionId,
+  evidenceRefsFromMaterialContext,
+  withSubmissionEvidenceRefs,
+  withSubmissionsEvidenceRefs,
+  collectFromSubmissions
+} from "../contracts/evidence.js";
 import { registerTeachingRoutes } from "./teaching.js";
 import { registerSpeechRoutes } from "./speech.js";
 
@@ -426,9 +433,23 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
           error: "未找到指定课件或当前用户无权访问"
         });
       }
+      // 溯源契约：上下文里的段落与图表要能指回原文。
+      // 文档版本取原件的内容哈希（内容寻址 ⇒ 原件不可变，旧引用不会指错）
+      const contextMaterial = store.getMaterialById(materialId, userId);
+      const documentVersionId = deriveDocumentVersionId(contextMaterial);
+      const evidenceRefs = evidenceRefsFromMaterialContext(context, documentVersionId);
+      // 缺版本时**不猜**：留空并说明原因，而不是编一个版本号让引用看起来成立
+      const traceWarnings = documentVersionId
+        ? []
+        : [
+            "该课件没有可追溯的原件版本（缺少内容哈希），本次不产出证据引用 —— " +
+              "溯源要求指向确定版本，没有版本时留空而不猜测。"
+          ];
       return sendJson(res, 200, {
         ok: true,
-        context
+        context,
+        evidenceRefs,
+        warnings: traceWarnings
       });
     }
 
@@ -1137,7 +1158,10 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         });
       }
 
-      const submissions = store.getSubmissions(auth.user.id, assignmentId);
+      // 溯源契约：建议分要能指回报告原文（版本取这份提交的内容哈希）
+      const submissions = withSubmissionsEvidenceRefs(
+        store.getSubmissions(auth.user.id, assignmentId)
+      );
       return sendJson(res, 200, {
         ok: true,
         userId: auth.user.id,
@@ -1145,7 +1169,8 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         assignmentId,
         courseId: assignment.courseId,
         count: submissions.length,
-        submissions
+        submissions,
+        evidenceRefs: collectFromSubmissions(submissions)
       });
     }
 
@@ -1174,7 +1199,13 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         });
       }
 
-      return sendJson(res, 200, { ok: true, submission });
+      // 溯源契约：建议分要能指回报告原文
+      const enrichedSubmission = withSubmissionEvidenceRefs(submission);
+      return sendJson(res, 200, {
+        ok: true,
+        submission: enrichedSubmission,
+        evidenceRefs: collectFromSubmissions([enrichedSubmission])
+      });
     }
 
     // 9.5 创建提交（学生交报告）
