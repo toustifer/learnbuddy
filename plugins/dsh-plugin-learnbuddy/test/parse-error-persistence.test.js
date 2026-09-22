@@ -699,3 +699,54 @@ test("(f) 向后兼容：未带解析错误的既有写路径行为不变，成�
   assert.equal(store.getMaterials("t-chen", "os").some((m) => m.id === "mat-compat"), true);
   assert.equal(store.listMaterials().length, 6, "种子 5 条 + 新增 1 条");
 });
+
+// ===========================================================================
+// 重启不能被种子覆盖（2026-09-22 修复）
+// ===========================================================================
+
+test("持久化·重启 - 种子只补不覆盖，评分/解析产物/批注必须活过重启", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "learnbuddy-seed-"));
+  const dbPath = path.join(dir, "learnbuddy.db");
+
+  // 1) 首次打开（空库 ⇒ 会种入演示数据）
+  const first = new DatabaseStore(dbPath);
+  const seeded = first.getSubmission("sub-xu-db");
+  assert.ok(seeded, "前置条件：种子里应当有 sub-xu-db 这条演示提交");
+
+  // 2) 模拟运行期产生的数据：评了分、落了解析产物、教师写了批注
+  first.updateSubmission("sub-xu-db", {
+    status: "review",
+    grades: [{ rubricId: "database-r0", score: 12, page: 1, evidence: "一段真实摘录" }],
+    summary: "小结",
+    parsedContent: { source: "document", pages: 2, structuredPages: [{ paragraphs: ["正文"] }] },
+    annotations: [{ id: "anno-1", page: 1, quote: "原文", comment: "教师批注" }]
+  });
+  first.close();
+
+  // 3) 重新打开同一个库文件 —— 等价于**重启服务**：种子会再跑一遍
+  const second = new DatabaseStore(dbPath);
+  const after = second.getSubmission("sub-xu-db");
+  second.close();
+
+  assert.equal(after.status, "review", "重启不得把状态打回种子值");
+  assert.equal(after.grades.length, 1, "重启不得清掉评分");
+  assert.equal(after.grades[0].score, 12);
+  assert.equal(after.summary, "小结", "重启不得清掉小结");
+  assert.ok(after.parsedContent, "重启不得清掉解析产物（它落库就是为了重启后仍能看到报告）");
+  assert.equal(after.parsedContent.source, "document");
+  assert.equal(after.annotations.length, 1, "重启不得清掉教师批注");
+  assert.equal(after.annotations[0].comment, "教师批注");
+
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("持久化·重启 - 空库仍然会被正常种入（只补不覆盖 ≠ 不补）", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "learnbuddy-seed2-"));
+  const dbPath = path.join(dir, "fresh.db");
+  const store = new DatabaseStore(dbPath);
+  assert.ok(store.getUser("t-chen"), "空库必须种入教师账号");
+  assert.ok(store.getSubmission("sub-xu-db"), "空库必须种入演示提交");
+  assert.ok(store.getAssignment("lab-db"), "空库必须种入作业");
+  store.close();
+  await fs.rm(dir, { recursive: true, force: true });
+});

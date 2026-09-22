@@ -729,8 +729,17 @@ export function seedDatabase(db, seedData = {}) {
   }
 
   // Insert submissions
+  //
+  // **只补不覆盖**：与上面 users 保留密码同一个道理 ——
+  // 提交记录上挂的是**运行期产生的东西**（评分、解析产物、教师批注），
+  // 用 `INSERT OR REPLACE`（先删后插）会在**每次重启**时把它们全部打回种子值：
+  //   · `grades` / `summary` / `history` / `status` 被打回演示初始值
+  //   · `parsed_content` 与 `annotations` 甚至不在下面的列清单里 ⇒ 直接清空
+  // 后果很实在：部署一次、重启一次，刚评好的分和教师写过的批注就没了；
+  // 而 parsedContent 落库本来就是为了「刷新/重启后仍能看到报告」。
+  // 因此这里改成 `INSERT OR IGNORE`：**只在记录不存在时补种子，存在就完全不动**。
   const insertSubmission = db.prepare(`
-    INSERT OR REPLACE INTO submissions (
+    INSERT OR IGNORE INTO submissions (
       id, assignment_id, student_id, file_name, submitted_at, status,
       sample_key, blob_id, grades, summary, history, failure
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
