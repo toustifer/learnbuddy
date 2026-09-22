@@ -97,6 +97,8 @@ export interface Submission {
   summary: string;
   history: ReviewVersion[];
   failure?: string;
+  /** 持久化的解析产物：有它就能渲染报告，不依赖本次评分是否成功 */
+  parsedContent?: ParsedReportContent | null;
 }
 export interface ChatReference {
   id: string;
@@ -141,6 +143,7 @@ export type Route =
   | { page: "insights"; courseId?: string };
 export interface DocumentPage {
   pageNumber?: number;
+  /** 章节标题取自文档自身结构；解析拿不到时为空串，由前端回退显示文件名 */
   heading: string;
   eyebrow: string;
   paragraphs: string[];
@@ -151,43 +154,37 @@ export interface DocumentPage {
   highlights?: string[];
 }
 
-/**
- * 报告解析后的单页结构（v0.2 双栏阅读器使用）。
- *
- * 与 `DocumentPage` 分开定义：阅读器按「一、二、三」渲染小节，用的是 `title`；
- * 而 `DocumentPage` 用的是 `heading` / `eyebrow` 且两者必填。强行合并会波及 `seed.ts`，
- * 因此这里独立定义，由 `ReportViewer` 内部归一化后再渲染。
- */
-export interface ParsedReportPage {
-  pageNumber?: number;
-  title?: string;
-  heading?: string;
-  eyebrow?: string;
-  paragraphs: string[];
-  diagram?: string;
-  diagramUrl?: string;
-  code?: string;
-  caption?: string;
-  highlights?: string[];
+/** 报告内嵌图片的可访问引用（后端落盘后返回，前端用 fileUrl(fileId) 取图） */
+export interface ReportImageRef {
+  index: number;
+  fileId: string;
+  mimeType: string;
+  size?: number;
+  viewUrl?: string;
 }
 
-/** 报告解析后的完整结构（v0.2 双栏阅读器左栏渲染用） */
+/** 评阅记录里携带的真实解析产物投影（后端 extractReportContent → parsedContent） */
 export interface ParsedReportContent {
-  title?: string;
-  fileName?: string;
-  blobId?: string;
-  pages: ParsedReportPage[];
+  title: string;
+  pages: number;
+  /** 页数由标题结构估算，仅作参考，不得当作真实页码展示 */
+  pagesEstimated?: boolean;
+  /** document = 真实解析；fixture = 内置演示样例，不得混入正式评分与统计 */
+  source?: "document" | "fixture";
+  hasImages?: boolean;
+  /** 真实落盘的内嵌图片；空数组表示确实没有或未落盘 */
+  images?: ReportImageRef[];
+  /** 未能落盘的原因，如实展示，不用占位图掩盖 */
+  imageWarnings?: string[];
+  /** 解析过程中的降级 / 缺失告警 */
+  warnings?: string[];
+  /** partial 表示正文拿到了、但有内容缺失（不等于解析失败） */
+  completeness?: "complete" | "partial";
+  structuredPages: DocumentPage[];
 }
 
-/**
- * 报告批注。
- *
- * 直接复用 `AnnotationItem`——`ReportViewer` 的 props 用的就是 `AnnotationItem`，
- * 之前 `Online.tsx` 引用了一个从未定义过的名字，导致整个模块类型检查失败。
- */
-export type ReportAnnotation = AnnotationItem;
-
-export interface AnnotationItem {
+/** 报告批注（教师在原文上的标注，可关联到某个评分项） */
+export interface ReportAnnotation {
   id: string;
   rubricId?: string;
   page: number;
@@ -208,10 +205,30 @@ export interface ServerGrade {
   page?: number;
   comment?: string;
   evidence?: string;
-  judgment?: "satisfied" | "partially_satisfied" | "not_satisfied" | "professional_judgment";
+  /** 可定位的证据引用：回答「依据哪一版报告的哪个位置」 */
+  evidenceRef?: EvidenceRef;
+  judgment?: "satisfied" | "partially_satisfied" | "not_satisfied" | "unable_to_judge" | "professional_judgment";
+  /** model = 模型给出的判定；score_fallback = 模型未给、由分数兜底 */
+  judgmentSource?: "model" | "score_fallback";
+  /** 后端 coverage 以嵌套对象返回，面板消费前需摊平成 coveredPoints/missingPoints */
+  coverage?: { coveredPoints?: string[]; missingPoints?: string[] };
   coveredPoints?: string[];
   missingPoints?: string[];
   attentionLevel?: "clear" | "needs_attention" | "review_required";
+}
+
+/** 可定位的证据引用（与后端 buildEvidenceRef 一一对应） */
+export interface EvidenceRef {
+  /** 文档版本：blobId（内容哈希）；无原件时为 null */
+  documentVersionId: string | null;
+  /** 可解析的定位符，如 "page=2" 或 "page=2&block=5" */
+  locator: string;
+  /** 定位粒度：page = 只到页；paragraph = 已精确定位到段 */
+  kind: "page" | "paragraph";
+  /** 原文摘录 */
+  quote: string;
+  /** 关联的内嵌图资产 */
+  assetId?: string | null;
 }
 export interface ServerReview {
   submissionId: string;
@@ -221,6 +238,7 @@ export interface ServerReview {
   grades: ServerGrade[];
   summary: string;
   reviewVersion?: number;
+  parsedContent?: ParsedReportContent | null;
   submission?: {
     assignmentId?: string;
     blobId?: string;

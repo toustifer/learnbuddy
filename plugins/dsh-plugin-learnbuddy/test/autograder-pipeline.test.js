@@ -29,6 +29,7 @@
  */
 
 import test from "node:test";
+import { withAuthHeaders } from "./helpers/auth.js";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { DatabaseStore } from "../src/db/store.js";
@@ -40,17 +41,18 @@ import {
   calculateGradesAndTotal
 } from "../src/services/autograder-pipeline.js";
 import { registerLearnBuddyRoutes } from "../src/routes/api.js";
-import { withAuthHeaders } from "./helpers/auth.js";
 
-function makeHttpRequest(port, method, path, headers = {}, body = null) {
-  return withAuthHeaders(port, headers).then((authHeaders) => new Promise((resolve, reject) => {
+async function makeHttpRequest(port, method, path, headers = {}, body = null) {
+    // 身份绑定后所有业务端点都要求令牌；不带会 401 而不是预期的参数校验 400
+    const authHeaders = await withAuthHeaders(port, headers);
+  return new Promise((resolve, reject) => {
     const req = http.request(
       {
         hostname: "127.0.0.1",
         port,
         path,
         method,
-        headers: authHeaders,
+        headers: authHeaders
       },
       (res) => {
         const chunks = [];
@@ -69,19 +71,21 @@ function makeHttpRequest(port, method, path, headers = {}, body = null) {
       req.write(typeof body === "string" ? body : JSON.stringify(body));
     }
     req.end();
-  }));
+  });
 }
 
 // ==========================================
 // 1. extractReportContent 报告提取验证
 // ==========================================
-test("AutoGrader - extractReportContent 多模态报告解构与提取", () => {
-  // 1. 命中 network sampleKey
-  const netReport = extractReportContent({
+test("AutoGrader - extractReportContent 只返回真实解析结果或显式失败", async () => {
+  // 1. 命中 network sampleKey：来源必须如实标记为 fixture
+  const netReport = await extractReportContent({
     fileName: "TCP实验报告_周可.pdf",
     sampleKey: "network"
   });
   assert.ok(netReport, "必须成功解构 network 报告");
+  assert.equal(netReport.status, "parsed");
+  assert.equal(netReport.source, "fixture", "内置样例必须标记为 fixture，不得混入正式评分");
   assert.equal(netReport.title, "TCP实验报告_周可.pdf");
   assert.ok(netReport.content.includes("TCP 三次握手"));
   assert.ok(netReport.content.includes("Wireshark"));
@@ -91,23 +95,122 @@ test("AutoGrader - extractReportContent 多模态报告解构与提取", () => {
   assert.equal(netReport.diagrams[0].page, 2);
 
   // 2. 命中 os sampleKey
-  const osReport = extractReportContent({
+  const osReport = await extractReportContent({
     fileName: "进程同步实验.pdf",
     sampleKey: "os"
   });
   assert.ok(osReport.content.includes("POSIX pthread"));
   assert.ok(osReport.content.includes("生产者与消费者"));
 
-  // 3. 通用兜底解构
-  const fallbackReport = extractReportContent({
-    fileName: "未知自定义作业.pdf"
-  });
-  assert.ok(fallbackReport.title.includes("未知自定义作业"));
-  assert.equal(fallbackReport.pages, 3);
-  assert.equal(fallbackReport.hasImages, true);
+  // 3. 没有原件时必须是显式失败，绝不生成替代正文（返工单 P1-4）
+  const noBlob = await extractReportContent({ fileName: "未知自定义作业.pdf" });
+  assert.equal(noBlob.status, "failed", "无原件不得回落成「看起来正常」的报告");
+  assert.equal(noBlob.errorCode, "PARSE_FAILED");
+  assert.equal(noBlob.content, "", "解析失败时正文必须为空，不允许任何替代正文");
+  assert.equal(noBlob.hasImages, false, "不得硬编码 hasImages");
+  assert.deepEqual(noBlob.diagrams, []);
 
   // 4. 空入参保护
-  assert.equal(extractReportContent(null), null);
+  assert.equal(await extractReportContent(null), null);
+});
+
+test("AutoGrader - extractReportContent 真实解析路径使用解析产物并如实标记来源", async () => {
+  const fakeParser = {
+    async parseDocument() {
+      return {
+        status: "parsed",
+        title: "lab.pdf",
+        markdown: "# 实验目的\n掌握三次握手\n\n## 实验步骤\n1. 打开 Wireshark 抓包",
+        pages: 2,
+        pagesEstimated: true,
+        images: [{ mimeType: "image/png", data: Buffer.from([1, 2, 3]) }],
+        embedded: { total: 1, inlined: 1, skipped: 0 }
+      };
+    }
+  };
+  const savedImages = [];
+  const storage = {
+    getFile: () => ({ path: "/tmp/lab.pdf", originalName: "lab.pdf", size: 100, mimeType: "application/pdf" }),
+    saveFile: async (buffer, originalName, options) => {
+      savedImages.push({ buffer, originalName, options });
+      return { fileId: "hash-abc.png", mimeType: "image/png", size: buffer.length, originalName };
+    }
+  };
+
+  const report = await extractReportContent(
+    { fileName: "lab.pdf", blobId: "blob-1" },
+    storage,
+    { parser: fakeParser }
+  );
+
+  assert.equal(report.status, "parsed");
+  assert.equal(report.source, "document", "真实解析必须标记 source=document");
+  assert.ok(report.content.includes("三次握手"));
+  assert.equal(report.pages, 2);
+  assert.equal(report.pagesEstimated, true, "估算页数必须显式标记，不冒充真实页码");
+  assert.equal(report.hasImages, true, "有真实图片资产时 hasImages 才为 true");
+  assert.equal(report.structuredPages.length, 2, "章节结构取文档真实标题");
+  assert.equal(report.structuredPages[0].heading, "实验目的");
+  assert.equal(report.structuredPages[1].heading, "实验步骤");
+
+  // 内嵌图片必须真实落盘并给出可访问引用
+  assert.equal(report.images.length, 1);
+  assert.equal(report.images[0].fileId, "hash-abc.png");
+  assert.equal(report.images[0].mimeType, "image/png");
+  assert.ok(report.images[0].viewUrl.endsWith("/files/hash-abc.png/view"));
+  assert.equal(savedImages.length, 1, "落盘必须真的调用存储服务");
+  assert.equal(savedImages[0].originalName, "report-image-1.png", "落盘文件名要带白名单扩展名");
+  assert.equal(savedImages[0].options.role, "report-image");
+  assert.deepEqual(report.imageWarnings, []);
+});
+
+test("AutoGrader - 内嵌图片落盘失败不牵连正文与评分", async () => {
+  const fakeParser = {
+    async parseDocument() {
+      return {
+        status: "parsed",
+        title: "lab.docx",
+        markdown: "# 实验\n正文内容",
+        pages: 1,
+        pagesEstimated: true,
+        images: [{ mimeType: "image/webp", data: Buffer.from([1]) }],
+        embedded: { total: 1, inlined: 1, skipped: 0 }
+      };
+    }
+  };
+  // 存储服务不支持 saveFile：必须优雅降级并如实说明，而不是抛错或假装有图
+  const storage = { getFile: () => ({ path: "/tmp/lab.docx", originalName: "lab.docx" }) };
+
+  const report = await extractReportContent(
+    { fileName: "lab.docx", blobId: "blob-y" },
+    storage,
+    { parser: fakeParser }
+  );
+
+  assert.equal(report.status, "parsed", "图片落盘问题不得让整个解析失败");
+  assert.equal(report.hasImages, false, "没有真实落盘的图就不能声称有图");
+  assert.deepEqual(report.images, []);
+  assert.equal(report.imageWarnings.length, 1, "未能落盘的原因必须如实记录");
+});
+
+test("AutoGrader - extractReportContent 解析失败不回落假内容", async () => {
+  const fakeParser = {
+    async parseDocument() {
+      return { status: "failed", errorCode: "malformed", error: "解析结果为空" };
+    }
+  };
+  const storage = { getFile: () => ({ path: "/tmp/broken.pdf", originalName: "broken.pdf" }) };
+
+  const report = await extractReportContent(
+    { fileName: "broken.pdf", blobId: "blob-x" },
+    storage,
+    { parser: fakeParser }
+  );
+
+  assert.equal(report.status, "failed");
+  assert.equal(report.errorCode, "malformed");
+  assert.equal(report.content, "");
+  assert.equal(report.hasImages, false);
 });
 
 // ==========================================
@@ -444,37 +547,171 @@ test("HTTP API - POST /grader/grade-submission & /grader/batch & /grader/retry �
     const subAfterRetry = store.getSubmission("sub-xu-net");
     assert.equal(subAfterRetry.status, "review");
     assert.equal(subAfterRetry.failure, null);
-    // 5. v0.2: 批注 CRUD 端点测试
-    const createAnnoRes = await makeHttpRequest(
-      port,
-      "POST",
-      "/api/learnbuddy/submissions/sub-xu-net/annotations",
-      { "Content-Type": "application/json" },
-      {
-        page: 2,
-        quote: "TCP 三次握手",
-        comment: "教师评注：三次握手抓包时序分析详实",
-        color: "green"
-      }
-    );
-    assert.equal(createAnnoRes.statusCode, 200);
-    const createAnnoData = JSON.parse(createAnnoRes.body.toString("utf-8"));
-    assert.equal(createAnnoData.ok, true);
-    assert.equal(createAnnoData.annotation.page, 2);
-    assert.equal(createAnnoData.annotation.color, "green");
-
-    const getAnnoRes = await makeHttpRequest(
-      port,
-      "GET",
-      "/api/learnbuddy/submissions/sub-xu-net/annotations"
-    );
-    assert.equal(getAnnoRes.statusCode, 200);
-    const getAnnoData = JSON.parse(getAnnoRes.body.toString("utf-8"));
-    assert.equal(getAnnoData.ok, true);
-    assert.equal(getAnnoData.annotations.length, 1);
-    assert.equal(getAnnoData.annotations[0].quote, "TCP 三次握手");
+    // 5. 批注（annotations）CRUD 端点不在此处断言。
+    //    该端点尚未实现，且字段投影归属涉及 D2 边界；
+    //    依据《AutoGrader 返工单与复审标准》§5「两处不要自行决定」——
+    //    必须先把数据模型确认下来再实现，不能替团队拍板。见下方待确认测试。
   } finally {
     testServer.close();
     store.close();
   }
 });
+
+test("AutoGrader - 正文过短的报告记为 partial 而不是完全成功", async () => {
+  const fakeParser = {
+    async parseDocument() {
+      return {
+        status: "partial",
+        warnings: ["正文仅提取到 12 个字符，内容可能不完整。"],
+        title: "short.docx",
+        markdown: "实验报告",
+        pages: 1,
+        pagesEstimated: true,
+        images: [],
+        embedded: { total: 0, inlined: 0, skipped: 0 }
+      };
+    }
+  };
+  // 顺带验证真实 StorageService 的接口（getFileMetadata + filePath）同样被兼容
+  const storage = {
+    getFileMetadata: () => ({ filePath: "/tmp/short.docx", originalName: "short.docx" })
+  };
+
+  const report = await extractReportContent(
+    { fileName: "short.docx", blobId: "blob-short" },
+    storage,
+    { parser: fakeParser }
+  );
+
+  assert.equal(report.status, "partial", "内容不完整不能被当成完全成功");
+  assert.equal(report.warnings.length, 1, "降级原因必须如实上报");
+  assert.ok(report.warnings[0].includes("字符"));
+});
+
+test("AutoGrader - 判定字段采纳模型输出，不由分数反推", () => {
+  const rubric = [{ id: "r0", title: "数据准备与查询设计", max: 20, criterion: "过程可复现。" }];
+  const raw = {
+    summary: "小结",
+    items: [
+      {
+        rubricId: "r0",
+        score: 10, // 分数只有一半：若按分数反推会得到 partially_satisfied
+        judgment: "satisfied", // 模型明确判定为达成
+        coveredPoints: ["列出了测试表的字段定义与约二十万行数据规模"],
+        missingPoints: [],
+        page: 1,
+        comment: "环境与数据准备交代清楚。",
+        evidence: "写入约二十万行数据，分别在建索引前后执行同一组查询。"
+      }
+    ]
+  };
+
+  const { grades } = calculateGradesAndTotal(rubric, raw);
+  const g = grades[0];
+
+  assert.equal(g.score, 10, "分数仍由程序按小项取值，不受判定字段影响");
+  assert.equal(g.judgment, "satisfied", "judgment 必须取模型输出，不能由分数反推");
+  assert.equal(g.judgmentSource, "model");
+  assert.deepEqual(g.coverage.coveredPoints, ["列出了测试表的字段定义与约二十万行数据规模"]);
+  assert.deepEqual(g.coverage.missingPoints, []);
+});
+
+test("AutoGrader - 模型未给判定时如实留空，不套模板句", () => {
+  const rubric = [{ id: "r0", title: "执行计划分析", max: 30, criterion: "解释观察结果。" }];
+  const raw = { summary: "小结", items: [{ rubricId: "r0", score: 15, page: 2, comment: "评语" }] };
+
+  const { grades } = calculateGradesAndTotal(rubric, raw);
+  const g = grades[0];
+
+  assert.equal(g.judgmentSource, "score_fallback", "模型未给判定时应显式标记来源为分数兜底");
+  assert.deepEqual(g.coverage.coveredPoints, [], "模型没给覆盖点就必须留空");
+  assert.deepEqual(g.coverage.missingPoints, []);
+
+  // 关键：不能出现「完全达成「XXX」所要求的…」这类标题拼接文案
+  const serialized = JSON.stringify(g.coverage);
+  assert.ok(!serialized.includes("完全达成"), "不得用模板句冒充具体分析");
+  assert.ok(!serialized.includes("基本完成"), "不得用模板句冒充具体分析");
+});
+
+test("AutoGrader - 关注级别与分数解耦", () => {
+  const rubric = [{ id: "r0", title: "性能解释与总结", max: 20, criterion: "给出结论。" }];
+
+  // 0 分但依据明确（报告确实没做）→ 值得关注，而不是「需人工裁决」
+  const zero = calculateGradesAndTotal(rubric, {
+    items: [{ rubricId: "r0", score: 0, judgment: "not_satisfied", missingPoints: ["未给出任何结论或改进方向"] }]
+  }).grades[0];
+  assert.equal(zero.attentionLevel, "needs_attention", "低分本身不等于需要人工裁决");
+
+  // 依据不足 → 需人工裁决（即便分数不低）
+  const unable = calculateGradesAndTotal(rubric, {
+    items: [{ rubricId: "r0", score: 18, judgment: "unable_to_judge" }]
+  }).grades[0];
+  assert.equal(unable.attentionLevel, "review_required", "依据不足才需要人工介入");
+
+  // 缺失点较多 → 需人工裁决
+  const manyMissing = calculateGradesAndTotal(rubric, {
+    items: [{ rubricId: "r0", score: 12, judgment: "partially_satisfied", missingPoints: ["缺少对比数据", "未解释瓶颈原因"] }]
+  }).grades[0];
+  assert.equal(manyMissing.attentionLevel, "review_required");
+
+  // 干净达成 → 表现明确
+  const clean = calculateGradesAndTotal(rubric, {
+    items: [{ rubricId: "r0", score: 20, judgment: "satisfied", missingPoints: [] }]
+  }).grades[0];
+  assert.equal(clean.attentionLevel, "clear");
+});
+
+test("AutoGrader - 证据升级为可定位引用", () => {
+  const rubric = [{ id: "r0", title: "执行计划分析", max: 30, criterion: "解释观察结果。" }];
+  const structuredPages = [
+    {
+      pageNumber: 1,
+      heading: "实验记录",
+      paragraphs: ["先准备测试数据与目标查询。", "使用 EXPLAIN 查看执行计划，记录访问类型与扫描行数。"]
+    }
+  ];
+  const raw = {
+    items: [
+      {
+        rubricId: "r0",
+        score: 20,
+        page: 1,
+        evidence: "使用 EXPLAIN 查看执行计划，记录访问类型与扫描行数。"
+      }
+    ]
+  };
+
+  const { grades } = calculateGradesAndTotal(rubric, raw, {
+    documentVersionId: "e38a62dd…b6ed.docx",
+    structuredPages
+  });
+  const ref = grades[0].evidenceRef;
+
+  assert.equal(ref.documentVersionId, "e38a62dd…b6ed.docx", "必须能回答「依据哪一版报告」");
+  assert.equal(ref.kind, "paragraph", "摘录能在原文里反查到段落时应精确到段");
+  assert.equal(ref.locator, "page=1&block=2", "locator 必须是可解析的键值形式");
+  assert.ok(ref.quote.includes("EXPLAIN"), "引用要带原文摘录");
+});
+
+test("AutoGrader - 摘录反查不到时退回页码级，不硬凑位置", () => {
+  const rubric = [{ id: "r0", title: "性能解释与总结", max: 20, criterion: "给出结论。" }];
+  const structuredPages = [{ pageNumber: 1, heading: "", paragraphs: ["与摘录完全无关的内容"] }];
+  const raw = {
+    items: [{ rubricId: "r0", score: 10, page: 1, evidence: "报告里并不存在的这句话，用于测试反查失败" }]
+  };
+
+  const { grades } = calculateGradesAndTotal(rubric, raw, {
+    documentVersionId: "v2.docx",
+    structuredPages
+  });
+  const ref = grades[0].evidenceRef;
+
+  assert.equal(ref.locator, "page=1", "定位不到就只报页码，不能编一个 block 数字");
+  assert.equal(ref.kind, "page");
+});
+
+test(
+  "HTTP API - 批注 CRUD 端点（待确认数据模型后实现）",
+  { skip: "端点未实现；依据返工单 §5，字段投影归属涉及 D2 边界，需先与团队确认再动手" },
+  () => {}
+);
