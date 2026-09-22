@@ -151,6 +151,122 @@ export class MaterialParserService {
   }
 
   /**
+   * 把文档解析为**可渲染产物**（不调用模型抽取知识点）。
+   *
+   * 与 `parseAndExtract()` 共用同一套解析引擎和同一条失败纪律（06 W02：
+   * 课件伴学与报告评阅不得各写一个不兼容的解析器）。区别只有一点：
+   * 本方法**不调用 LLM**，因此报告评阅链路只依赖真实解析结果，
+   * 既不会被模型可用性牵连，也不会顺带产生一次无用的知识点开销。
+   *
+   * 纪律（与课件解析一致，不得回退）：
+   *   1. `markdown` 必须来自真实引擎解析，任何情况下都不返回替代正文；
+   *   2. 解析失败如实返回 `status:"failed"` + `errorCode`，`markdown` 恒为空串；
+   *   3. anydoc 的 Markdown 通道不返回真实页数，`pages` 由标题结构估算，
+   *      因此用 `pagesEstimated: true` 显式标记，调用方不得把它当真实页码用。
+   *
+   * @param {string} filePath 文件物理路径
+   * @param {string} originalName 原始文件名
+   * @returns {Promise<object>} `status:"parsed"` 时含 markdown/pages/images/embedded；
+   *   `status:"failed"` 时含 errorCode + error，markdown 为 ""
+   */
+  async parseDocument(filePath, originalName) {
+    const ext = path.extname(originalName || filePath).toLowerCase();
+    const title = originalName || path.basename(filePath);
+    const uploadedAt = new Date().toISOString().replace("T", " ").substring(0, 16);
+    const format = ext.replace(".", "") || "unknown";
+
+    // 体积必须是真实文件大小（旧实现写死 "2.4 MB"，同样是假数据）
+    let size = "0 KB";
+    try {
+      const stat = await fs.stat(filePath);
+      size = formatFileSize(stat.size);
+    } catch (err) {
+      return this._failureResult(title, ext, size, uploadedAt, createParseError("io", `读取文件失败：${err.message}`));
+    }
+
+    try {
+      // 1. 纯文本类：直接读取，没有内嵌图片资产
+      if (ext === ".txt" || ext === ".md") {
+        const markdown = await fs.readFile(filePath, "utf-8");
+        return this._parsedResult({ title, ext, format, size, uploadedAt, markdown });
+      }
+
+      // 2. 图片类：整份文件就是一张图，正文仅作回执文案（与 parseAndExtract 行为一致）
+      if (IMAGE_EXTENSIONS.has(ext)) {
+        const images = await this._readInlineImages(filePath, ext);
+        return this._parsedResult({
+          title, ext, format, size, uploadedAt,
+          markdown: `【图片课件】${title}`,
+          images
+        });
+      }
+
+      // 3. 其余格式一律走 anydoc 真实解析
+      const converted = await this._convertWithAnydoc(filePath, ext);
+      const warnings = [];
+      // 内嵌资产被跳过意味着图文证据不完整：如实上报为 partial，但不因此判定为失败
+      const skipped = converted.embedded?.skipped ?? 0;
+      if (skipped > 0) {
+        warnings.push(
+          `文档内嵌资产中有 ${skipped} 项未能提取（超出张数或单张体积上限、或非图片），正文不受影响。`
+        );
+      }
+      return this._parsedResult({
+        title, ext, size, uploadedAt,
+        format: converted.format,
+        markdown: converted.markdown,
+        images: converted.images,
+        embedded: converted.embedded,
+        warnings
+      });
+    } catch (err) {
+      // 【禁止静默失败】解析失败一律如实上报，绝不回落成「看起来正常」的假内容
+      return this._failureResult(title, ext, size, uploadedAt, err);
+    }
+  }
+
+  /**
+   * 组装解析成功结果。
+   *
+   * 正文为空一律按解析失败处理 —— 空正文如果当成「解析成功」，
+   * 下游就会拿着空内容去评分或渲染，这正是历史上假内容的来源之一。
+   *
+   * 三态语义（对齐 InsightTutor 的 ParseStatus）：正文拿到了、但内容有缺失
+   * 记为 `partial` 而不是 `parsed`。「解析成功」与「内容完整」是两件事。
+   */
+  _parsedResult({ title, ext, format, size, uploadedAt, markdown, images = [], embedded, warnings = [] }) {
+    const text = String(markdown ?? "");
+    if (!text.trim()) {
+      return this._failureResult(
+        title, ext, size, uploadedAt,
+        createParseError("malformed", `解析结果为空：${title} 未提取到任何正文内容`)
+      );
+    }
+
+    const collected = [...warnings];
+    // 正文短到不可能是完整文档时如实标记（图片课件的正文只是占位说明，不参与检查）
+    const bodyLength = text.trim().length;
+    if (!IMAGE_EXTENSIONS.has(ext) && bodyLength < 40) {
+      collected.push(`正文仅提取到 ${bodyLength} 个字符，内容可能不完整。`);
+    }
+
+    return {
+      title,
+      ext,
+      format,
+      size,
+      uploadedAt,
+      status: collected.length > 0 ? "partial" : "parsed",
+      warnings: collected,
+      pages: estimatePageCount(text, format),
+      pagesEstimated: true,
+      markdown: text,
+      images,
+      embedded: embedded || { total: images.length, inlined: images.length, skipped: 0 }
+    };
+  }
+
+  /**
    * 解析课件文件并抽取知识点
    *
    * @param {string} filePath 文件物理路径
@@ -166,44 +282,16 @@ export class MaterialParserService {
     const title = originalName || path.basename(filePath);
     const uploadedAt = new Date().toISOString().replace("T", " ").substring(0, 16);
 
-    let textContent = "";
-    let pageCount = 1;
-    // 图片课件：走视觉模型（LLM_MODEL_VISION），而不是把文件名当正文喂给文本模型
-    let inlineImages = [];
-    // 文档内嵌图片（PPT 图表/截图）的抽取统计
-    let embedded = { total: 0, inlined: 0, skipped: 0 };
-    let format = ext.replace(".", "") || "unknown";
+    // 复用与报告评阅完全相同的解析契约，避免两条业务线各写一套解析器
+    const parsed = await this.parseDocument(filePath, originalName);
+    if (parsed.status === "failed") return parsed;
 
-    // 体积必须是真实文件大小（旧实现写死 "2.4 MB"，同样是假数据）
-    let size = "0 KB";
-    try {
-      const stat = await fs.stat(filePath);
-      size = formatFileSize(stat.size);
-    } catch (err) {
-      return this._failureResult(title, ext, size, uploadedAt, createParseError("io", `读取文件失败：${err.message}`));
-    }
-
-    try {
-      if (ext === ".txt" || ext === ".md") {
-        textContent = await fs.readFile(filePath, "utf-8");
-      } else if (IMAGE_EXTENSIONS.has(ext)) {
-        inlineImages = await this._readInlineImages(filePath, ext);
-        textContent = `【图片课件】${title}`;
-      } else {
-        const converted = await this._convertWithAnydoc(filePath, ext);
-        textContent = converted.markdown;
-        pageCount = converted.pages;
-        inlineImages = converted.images;
-        embedded = converted.embedded;
-        format = converted.format;
-        if (!String(textContent).trim()) {
-          throw createParseError("malformed", `解析结果为空：${title} 未提取到任何正文内容`);
-        }
-      }
-    } catch (err) {
-      // 【禁止静默失败】解析失败一律如实上报，绝不回落成「看起来正常」的假内容
-      return this._failureResult(title, ext, size, uploadedAt, err);
-    }
+    const textContent = parsed.markdown;
+    const pageCount = parsed.pages;
+    const inlineImages = parsed.images;
+    const embedded = parsed.embedded;
+    const format = parsed.format;
+    const size = parsed.size;
 
     // 2. 调用模型抽取结构化知识点（有图走视觉模型，纯文本走文本模型）
     const knowledgePoints = await this.extractKnowledgePoints(textContent, title, inlineImages);
@@ -214,8 +302,14 @@ export class MaterialParserService {
       format,
       size,
       uploadedAt,
-      status: "parsed",
+      // 与 parseDocument 的三态保持一致：内容有缺失就记 partial，不谎报完全成功
+      status: parsed.status === "partial" ? "partial" : "parsed",
+      warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
       pages: pageCount,
+      pagesEstimated: parsed.pagesEstimated === true,
+      // 完整正文与内嵌图片资产：报告评阅与前端渲染直接复用同一份解析产物
+      content: textContent,
+      images: inlineImages,
       keyPointsCount: knowledgePoints.length,
       knowledgePoints,
       embeddedImages: embedded,
@@ -239,6 +333,11 @@ export class MaterialParserService {
       errorCode,
       error,
       pages: 0,
+      pagesEstimated: false,
+      // 失败时正文与图片资产恒为空：调用方据此渲染「解析不可用」，
+      // 不允许用任何替代正文把失败伪装成成功
+      markdown: "",
+      images: [],
       keyPointsCount: 0,
       knowledgePoints: [],
       embeddedImages: { total: 0, inlined: 0, skipped: 0 },

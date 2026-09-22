@@ -19,7 +19,7 @@
 
 import { MultimodalLLMClient } from "./llm.js";
 import { AutoGraderEngine } from "./grader.js";
-import { parseMaterial } from "./material-parser.js";
+import { MaterialParserService } from "./material-parser.js";
 
 /**
  * 标杆计算机网络实验评分表（Wireshark 协议分析与三次握手）
@@ -125,125 +125,255 @@ export const SAMPLE_STUDENT_REPORTS = {
   }
 };
 
-/**
- * 从存储读取报告原件并做**真实解析**（异步）。
- *
- * 单独抽出来的原因：`extractReportContent` 是对外导出的同步函数（既有测试按同步调用断言），
- * 不能直接在里面 await。因此把异步解析放在这里，结果作为第三个参数传回同步函数。
- *
- * @returns {Promise<object|null>} 解析成功返回含 `content` 的文档对象；不可用时返回 null
- */
-export async function parseReportDocument(submission, storage) {
-  if (!submission || !submission.blobId || !storage) return null;
-  try {
-    // StorageService 的真实接口是 getFilePath / getFileMetadata，**没有 getFile**
-    //（此前这里调用了不存在的 storage.getFile，抛错被下面的 catch 吞掉，
-    //  导致「真实解析报告」实际上从未发生过 —— 合并 2026-09-21 时一并修正）
-    const filePath = storage.getFilePath(submission.blobId);
-    if (!filePath) return null;
-    const meta = typeof storage.getFileMetadata === "function"
-      ? storage.getFileMetadata(submission.blobId)
-      : null;
-    return await parseMaterial(filePath, {
-      mimeType: (meta && meta.mimeType) || undefined,
-      filename: submission.fileName || (meta && meta.fileId) || undefined
-    });
-  } catch (err) {
-    // 解析失败要吵，不要静默；由调用方走显式降级
-    console.warn(`[AutoGrader] 报告原件解析失败，本次评分将缺少可核对依据：${err.message}`);
-    return null;
-  }
+/** 解析失败时统一返回的显式失败对象（正文恒为空，绝不生成替代正文） */
+function parseFailedReport(submission, error, errorCode = "PARSE_FAILED") {
+  return {
+    status: "failed",
+    source: "document",
+    errorCode,
+    error,
+    title: submission?.fileName || "学生提交实验报告",
+    content: "",
+    pages: 0,
+    pagesEstimated: false,
+    diagrams: [],
+    images: [],
+    hasImages: false,
+    structuredPages: null
+  };
 }
 
+/** 文档没有标题结构时，每页大约容纳的段落数（估算用，不冒充真实页码） */
+const PARAGRAPHS_PER_ESTIMATED_PAGE = 12;
+
 /**
- * 校验并提取学生报告正文与多模态证据
+ * 把真实解析出的 Markdown 正文切成可渲染的页面结构。
  *
- * @param {object} submission 提交记录
- * @param {object} [storage] StorageService
- * @param {object|null} [parsedDoc] 由 `parseReportDocument()` 预先异步取得的真实解析产物
+ * 只用**文档自身的标题**作为章节名，不写死「第 N 部分」这类占位标题；
+ * 没有标题时整篇作为一页，标题留空、由前端显示文件名。
  */
-export function extractReportContent(submission, storage = null, parsedDoc = null) {
-  if (!submission) return null;
-
-  // 1. 优先根据 sampleKey 匹配高质量内置报告样例
-  if (submission.sampleKey && SAMPLE_STUDENT_REPORTS[submission.sampleKey]) {
-    const sample = SAMPLE_STUDENT_REPORTS[submission.sampleKey];
-    return {
-      title: submission.fileName || sample.title,
-      content: sample.text,
-      pages: sample.pages || 3,
-      diagrams: sample.diagrams || [],
-      hasImages: Boolean(sample.diagrams && sample.diagrams.length > 0)
-    };
+function buildStructuredPages(markdown) {
+  const lines = String(markdown || "").split(/\r?\n/);
+  const sections = [];
+  let current = null;
+  for (const line of lines) {
+    const heading = line.match(/^\s{0,3}(#{1,3})\s+(.+?)\s*$/);
+    if (heading) {
+      current = { heading: heading[2].trim(), paragraphs: [] };
+      sections.push(current);
+      continue;
+    }
+    if (!current) {
+      current = { heading: "", paragraphs: [] };
+      sections.push(current);
+    }
+    const text = line.trim();
+    if (text) current.paragraphs.push(text);
   }
+  const meaningful = sections.filter((s) => s.heading || s.paragraphs.length > 0);
 
-  // 2. 真实解析产物优先（由调用方 await parseReportDocument 后传入）
-  if (parsedDoc && parsedDoc.content) {
-    const rawText = parsedDoc.content;
-    // 按分页或段落估算页码与结构（真实页码取解析器结果，缺失时才用分块数兜底）
-    const pageChunks = rawText.split(/(?:(?:\r?\n){3,}|(?=【第\s*\d+\s*页】))/).filter(Boolean);
-    const pagesCount = Number.isFinite(parsedDoc.pages) && parsedDoc.pages > 0
-      ? parsedDoc.pages
-      : Math.max(1, pageChunks.length);
-    const structuredPages = pageChunks.map((chunk, idx) => ({
-      pageNumber: idx + 1,
-      title: `第 ${idx + 1} 部分`,
-      paragraphs: chunk.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+  // 文档自带标题结构：按标题分节，标题就是真实章节名
+  if (meaningful.some((s) => s.heading)) {
+    return meaningful.map((section, index) => ({
+      pageNumber: index + 1,
+      heading: section.heading,
+      paragraphs: section.paragraphs
     }));
-
-    return {
-      title: submission.fileName || parsedDoc.title || "学生提交实验报告",
-      content: rawText,
-      pages: pagesCount,
-      // 真实路径下不再伪造图注；图片证据以 hasImages + 原件引用为准
-      diagrams: [],
-      structuredPages,
-      hasImages: parsedDoc.hasImages === true,
-      source: "parsed"
-    };
   }
 
-  // 3. 未取得真实解析产物时，回退到元数据描述（保持既有对外契约不变）
-  if (submission.blobId && storage) {
+  // 完全没有标题（anydoc 对 DOCX 常只给纯段落）：按段落数估算分页，
+  // 保留阅读器的翻页体验。页数属估算值，由 pagesEstimated 显式标记，不冒充真实页码。
+  const paragraphs = meaningful.flatMap((s) => s.paragraphs);
+  if (paragraphs.length === 0) {
+    return [{ pageNumber: 1, heading: "", paragraphs: [] }];
+  }
+  const pages = [];
+  for (let i = 0; i < paragraphs.length; i += PARAGRAPHS_PER_ESTIMATED_PAGE) {
+    pages.push({
+      pageNumber: pages.length + 1,
+      heading: "",
+      paragraphs: paragraphs.slice(i, i + PARAGRAPHS_PER_ESTIMATED_PAGE)
+    });
+  }
+  return pages;
+}
+
+/** 内嵌图片可落盘的 MIME → 扩展名（与 storage 的 ALLOWED_EXTENSIONS 白名单保持一致） */
+const IMAGE_EXT_BY_MIME = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg"
+};
+
+/**
+ * 把解析出的内嵌图片落盘为可访问资源。
+ *
+ * 纪律：单张失败不牵连整条链路 —— 正文与评分照常进行，
+ * 但原因必须如实记入 warnings，既不能静默吞掉，也不能用占位图冒充真图。
+ * 落盘走内容寻址（fileId = hash + ext），同一张图重复提交不会重复占用磁盘。
+ */
+async function persistReportImages(rawImages, storage, submission) {
+  const list = Array.isArray(rawImages) ? rawImages : [];
+  const images = [];
+  const imageWarnings = [];
+
+  if (list.length === 0) return { images, imageWarnings };
+
+  if (typeof storage?.saveFile !== "function") {
+    imageWarnings.push(`本次解析得到 ${list.length} 张内嵌图片，但存储服务不支持落盘，图片未保存。`);
+    return { images, imageWarnings };
+  }
+
+  for (const [index, asset] of list.entries()) {
+    const mimeType = String(asset?.mimeType || "");
+    const ext = IMAGE_EXT_BY_MIME[mimeType];
+    if (!ext || !asset?.data) {
+      imageWarnings.push(`第 ${index + 1} 张内嵌图片格式为 ${mimeType || "未知"}，不在存储白名单内，未落盘。`);
+      continue;
+    }
     try {
-      const filePath = storage.getFilePath(submission.blobId);
-      const meta = filePath && typeof storage.getFileMetadata === "function"
-        ? storage.getFileMetadata(submission.blobId)
-        : null;
-      if (filePath) {
-        return {
-          title: submission.fileName || (meta && meta.fileId) || "学生提交实验报告",
-          content: `学生实验报告（文件名：${submission.fileName || "未知"}，文件大小：${(meta && meta.size) || 0} 字节，格式：${(meta && meta.mimeType) || "未知"}）。已提取报告中包含的实验拓扑环境、关键步骤操作日志与抓包数据证据。`,
-          pages: 3,
-          diagrams: [
-            {
-              page: 2,
-              caption: "报告附图: 实验操作运行截图与关键数据证据",
-              evidence: "原件包含实验操作过程及抓包截图证据。"
-            }
-          ],
-          hasImages: true,
-          source: "metadata"
-        };
-      }
-    } catch {
-      // 忽略物理读取异常，回退默认
+      const saved = await storage.saveFile(asset.data, `report-image-${index + 1}${ext}`, {
+        role: "report-image",
+        sourceBlobId: submission?.blobId || null
+      });
+      images.push({
+        index: index + 1,
+        fileId: saved.fileId,
+        mimeType: saved.mimeType || mimeType,
+        size: saved.size,
+        viewUrl: `/api/learnbuddy/files/${saved.fileId}/view`
+      });
+    } catch (err) {
+      imageWarnings.push(`第 ${index + 1} 张内嵌图片落盘失败：${err.message}`);
     }
   }
 
-  // 3. 通用兜底解构
+  return { images, imageWarnings };
+}
+
+/**
+ * 校验并提取学生报告正文与多模态证据。
+ *
+ * 契约（复用课件解析的同一条纪律，返工单 P1-4「不许生成看起来正常的假内容」）：
+ *   1. `content` 只来自真实解析产物，任何情况下都不生成替代正文；
+ *   2. 解析失败返回 `status:"failed"` + `errorCode:"PARSE_FAILED"`，
+ *      由调用方决定如何呈现，绝不拿假正文继续评分；
+ *   3. `source` 如实标记来源：`document` = 真实解析，`fixture` = 内置演示样例，
+ *      按 04 §5，fixture 结果不得混入正式评分与统计；
+ *   4. 不硬编码 `hasImages` 与图注，图片数量取真实解析统计；
+ *   5. `pages` 由标题结构估算，用 `pagesEstimated` 显式标记，不冒充真实页码。
+ *
+ * @returns {Promise<object|null>} 未提供提交记录时返回 null
+ */
+export async function extractReportContent(submission, storage = null, options = {}) {
+  if (!submission) return null;
+
+  // 1. 内置演示样例：来源如实标记为 fixture
+  if (submission.sampleKey && SAMPLE_STUDENT_REPORTS[submission.sampleKey]) {
+    const sample = SAMPLE_STUDENT_REPORTS[submission.sampleKey];
+    return {
+      status: "parsed",
+      source: "fixture",
+      title: submission.fileName || sample.title,
+      content: sample.text,
+      pages: sample.pages || 3,
+      pagesEstimated: false,
+      diagrams: sample.diagrams || [],
+      images: [],
+      hasImages: Boolean(sample.diagrams && sample.diagrams.length > 0),
+      // 样例也切成可渲染结构便于演示；但 source=fixture 已如实标记来源，
+      // 按 04 §5 不得混入正式评分与统计
+      structuredPages: buildStructuredPages(sample.text)
+    };
+  }
+
+  // 2. 没有可解析的原件：显式失败，不再编造一份报告
+  if (!submission.blobId || !storage) {
+    return parseFailedReport(submission, "该提交没有可解析的原件（缺少 blobId 或存储服务不可用）。");
+  }
+
+  let fileInfo = null;
+  try {
+    // 真实 StorageService 提供的是 getFileMetadata/getFilePath，且路径字段名是 filePath；
+    // 早期假实现用过 getFile/path。两者都兼容，避免再踩「方法不存在」导致解析静默失败。
+    fileInfo =
+      (typeof storage.getFile === "function" ? storage.getFile(submission.blobId) : null) ||
+      (typeof storage.getFileMetadata === "function" ? storage.getFileMetadata(submission.blobId) : null);
+  } catch (err) {
+    return parseFailedReport(submission, `读取原件元数据失败：${err.message}`, "NOT_FOUND");
+  }
+
+  const filePath = fileInfo?.filePath || fileInfo?.path || null;
+  if (!filePath) {
+    return parseFailedReport(submission, "原件元数据缺失（查不到物理路径），无法解析报告。", "NOT_FOUND");
+  }
+
+  // 3. 真实解析：复用课件解析的同一契约（parseDocument 不调用 LLM）
+  const parser = options.parser || new MaterialParserService(options.llmClient);
+  let parsed;
+  try {
+    parsed = await parser.parseDocument(filePath, fileInfo.originalName || submission.fileName);
+  } catch (err) {
+    return parseFailedReport(submission, `解析报告时发生异常：${err.message}`);
+  }
+
+  const text = String(parsed?.markdown || "");
+  // 只有 failed 才算失败；partial（正文拿到了、但内容有缺失）继续走评分并如实带上告警
+  if (parsed?.status === "failed" || !text.trim()) {
+    return parseFailedReport(
+      submission,
+      parsed?.error || "报告解析未产出任何正文内容。",
+      parsed?.errorCode || "PARSE_FAILED"
+    );
+  }
+
+  // 内嵌图片落盘为可访问资源；失败或格式不支持的单张如实记入 warnings，
+  // 不影响正文与评分（不因为取不到图就判定学生没做实验）
+  const { images, imageWarnings } = await persistReportImages(parsed.images, storage, submission);
+
+  const structuredPages = buildStructuredPages(text);
+
   return {
-    title: submission.fileName || "学生提交实验报告",
-    content: `学生实验报告（文件名：${submission.fileName || "report.pdf"}）。实验步骤完整，包含了实验拓扑环境说明、操作步骤与数据分析，附带相关实验证据截图，并给出了异常分析与总结。`,
-    pages: 3,
-    diagrams: [
-      {
-        page: 2,
-        caption: "报告附图: 实验结果截图与关键数据标注",
-        evidence: "已核验第 2 页报告截图与实验数据。"
-      }
-    ],
-    hasImages: true
+    // partial 表示正文拿到了但内容有缺失（内嵌资产被跳过等），如实向上传递
+    status: parsed.status === "partial" ? "partial" : "parsed",
+    source: "document",
+    title: submission.fileName || parsed.title,
+    content: text,
+    // 页数以实际渲染出的页面结构为准，避免「总页数」与阅读器里的页数对不上
+    pages: structuredPages.length,
+    pagesEstimated: parsed.pagesEstimated === true,
+    // 只有真实落盘成功的图片才会出现在这里，不再凭空生成图注与「已提取截图」结论
+    images,
+    imageWarnings,
+    // 解析过程中的降级/缺失告警（与图片告警分开保留，便于前端分组展示）
+    warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
+    diagrams: [],
+    hasImages: images.length > 0,
+    embedded: parsed.embedded,
+    // 文档版本标识：blobId 是内容哈希，天然就是「这条结论依据哪一版报告」的答案
+    documentVersionId: submission.blobId || null,
+    structuredPages
+  };
+}
+
+/**
+ * 解析产物在评阅记录里的投影（阅读器消费的形状）。
+ * 抽成函数是为了「评分前先落库」与「评分成功后写入」两处共用同一套字段。
+ */
+function buildParsedContent(report) {
+  if (!report?.structuredPages) return null;
+  return {
+    title: report.title,
+    pages: report.pages,
+    pagesEstimated: report.pagesEstimated === true,
+    source: report.source,
+    hasImages: report.hasImages === true,
+    // 真实落盘的图片引用 + 未能落盘的原因，供阅读器渲染与如实告知
+    images: Array.isArray(report.images) ? report.images : [],
+    imageWarnings: Array.isArray(report.imageWarnings) ? report.imageWarnings : [],
+    warnings: Array.isArray(report.warnings) ? report.warnings : [],
+    // 解析完整性：partial 表示正文拿到了但有内容缺失，前端应如实提示
+    completeness: report.status === "partial" ? "partial" : "complete",
+    structuredPages: report.structuredPages
   };
 }
 
@@ -254,7 +384,7 @@ export function extractReportContent(submission, storage = null, parsedDoc = nul
  * 1. 严禁信任大模型口算的 totalScore，必须由后端程序严格遍历小项累加！
  * 2. 各小项得分必须严格限制在 [0, rubricItem.max] 范围之内。
  */
-export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}) {
+export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}, options = {}) {
   const rawItems = rawEvaluation.items || rawEvaluation.rubricChecks || rawEvaluation.grades || [];
   const summary = rawEvaluation.summary || rawEvaluation.summaryReview || "实验报告评阅完成。";
 
@@ -308,20 +438,22 @@ export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}) {
       ? String(matched.evidence).trim()
       : `核验报告第 ${page} 页相关文字描述与实验截图证据。`;
 
-    // v0.2: 结构化覆盖分析与关注级别计算
-    const isFull = itemScore >= maxScore;
-    const isPartial = itemScore > 0 && itemScore < maxScore;
-    const judgment = isFull ? "satisfied" : (isPartial ? "partially_satisfied" : "not_satisfied");
-    const attentionLevel = judgment === "satisfied" ? "clear" : (judgment === "partially_satisfied" ? "needs_attention" : "review_required");
+    // v0.3: 判定字段优先采纳模型输出；缺什么就如实留空，
+    // 不再由分数反推、不再用标题套模板（返工单 P1：judgment / 覆盖度 / 关注级别要与分数解耦）
+    const modelJudgment = normalizeJudgment(matched?.judgment);
+    // 分数仅作为「模型没给判定」时的兜底，并显式标记来源，避免看起来像模型判断
+    const scoreFallback = itemScore >= maxScore
+      ? "satisfied"
+      : (itemScore > 0 ? "partially_satisfied" : "not_satisfied");
+    const judgment = modelJudgment || scoreFallback;
+    const judgmentSource = modelJudgment ? "model" : "score_fallback";
 
-    const coveredPoints = isFull
-      ? [`完全达成「${rubricItem.title}」所要求的实验指标与实验操作规范`]
-      : (isPartial ? [`基本完成「${rubricItem.title}」主要流程`] : []);
-    const missingPoints = isFull
-      ? []
-      : (isPartial
-          ? [`建议补充「${rubricItem.title}」更完整的边界测试或深入机制分析`]
-          : [`未在报告中明确检测到「${rubricItem.title}」相关实质性实验证据或关键操作`]);
+    // 覆盖点只接受模型给出的具体子要求；模型没给就留空，不编模板句
+    const coveredPoints = cleanCoveragePoints(matched?.coveredPoints ?? matched?.coverage?.coveredPoints);
+    const missingPoints = cleanCoveragePoints(matched?.missingPoints ?? matched?.coverage?.missingPoints);
+
+    // 关注级别按内容信号分类，与分数高低解耦
+    const attentionLevel = decideAttentionLevel({ judgment, missingPoints });
 
     grades.push({
       rubricId: rubricItem.id,
@@ -330,7 +462,16 @@ export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}) {
       page,
       comment,
       evidence,
+      // 可定位引用：回答「依据哪一版报告的哪个位置」，而不只是一段孤立文字
+      evidenceRef: buildEvidenceRef({
+        documentVersionId: options.documentVersionId || null,
+        page,
+        quote: evidence,
+        structuredPages: options.structuredPages || null
+      }),
       judgment,
+      /** model = 模型明确给出的判定；score_fallback = 模型未给，由分数兜底 */
+      judgmentSource,
       attentionLevel,
       coverage: {
         coveredPoints,
@@ -345,6 +486,96 @@ export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}) {
     maxScore: totalMaxScore,
     summary
   };
+}
+
+/** 判定枚举：新增 unable_to_judge —— 报告未涉及该评分项时的诚实选项，而不是硬塞一个档位 */
+const JUDGMENT_VALUES = new Set([
+  "satisfied",
+  "partially_satisfied",
+  "not_satisfied",
+  "unable_to_judge"
+]);
+
+function normalizeJudgment(raw) {
+  const value = String(raw ?? "").trim().toLowerCase();
+  return JUDGMENT_VALUES.has(value) ? value : null;
+}
+
+/**
+ * 清理模型给出的覆盖点：去空、去重、限长限条。
+ *
+ * 关键纪律：**不做任何补全**。模型没给就返回空数组，
+ * 绝不用「完全达成 XXX」「基本完成 XXX 主要流程」这类模板句冒充具体分析 ——
+ * 那种文案读起来像分析，实际上是标题拼接，正是上一版被诟病的地方。
+ */
+function cleanCoveragePoints(raw, maxItems = 6, maxLen = 80) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const item of raw) {
+    const text = String(item ?? "").trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text.length > maxLen ? `${text.slice(0, maxLen)}…` : text);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
+/**
+ * 关注级别：按**内容信号**分类，而不是按分数高低。
+ *
+ * - 依据不足（unable_to_judge）或缺失点较多 → 需人工裁决
+ * - 有缺失点 / 部分达成 / 明确未达成 → 值得关注
+ * - 其余 → 表现明确
+ *
+ * 这样「低分」本身不会自动等于「需裁决」，避免把判断依据不足误标成学生的问题。
+ */
+function decideAttentionLevel({ judgment, missingPoints }) {
+  if (judgment === "unable_to_judge") return "review_required";
+  if (missingPoints.length >= 2) return "review_required";
+  if (missingPoints.length === 1) return "needs_attention";
+  if (judgment === "partially_satisfied" || judgment === "not_satisfied") return "needs_attention";
+  return "clear";
+}
+
+/**
+ * 组装可定位的证据引用（返工单 P1-3 方向）。
+ *
+ * locator 采用可解析的键值形式：
+ *   - `page=N`          只定位到页
+ *   - `page=N&block=M`  进一步定位到该页第 M 段（用模型给出的原文摘录反查）
+ *
+ * 反查不到就退回页码级 —— 定位不到就说定位不到，不硬凑一个 block 数字出来。
+ */
+function buildEvidenceRef({ documentVersionId, page, quote, structuredPages }) {
+  const ref = {
+    documentVersionId: documentVersionId || null,
+    locator: `page=${page}`,
+    kind: "page",
+    quote: String(quote || "").trim(),
+    assetId: null
+  };
+
+  const needle = normalizeForMatch(ref.quote).slice(0, 24);
+  if (!needle) return ref;
+
+  const pageEntry = Array.isArray(structuredPages) ? structuredPages[page - 1] : null;
+  const paragraphs = Array.isArray(pageEntry?.paragraphs) ? pageEntry.paragraphs : [];
+  const blockIndex = paragraphs.findIndex((p) => normalizeForMatch(p).includes(needle));
+
+  if (blockIndex >= 0) {
+    ref.locator = `page=${page}&block=${blockIndex + 1}`;
+    ref.kind = "paragraph";
+  }
+  return ref;
+}
+
+/** 匹配用归一化：去掉空白与常见中英文标点，避免因排版差异漏匹配 */
+function normalizeForMatch(text) {
+  return String(text || "")
+    .replace(/\s+/g, "")
+    .replace(/[，。；：、（）「」【】“”‘’"'.,;:()[\]!?！？]/g, "");
 }
 
 /**
@@ -417,10 +648,23 @@ export class AutoGraderPipelineService {
         criterion: r.criterion || r.criteria || "符合实验规范要求。"
       }));
 
-      // 4. 提取或解构学生报告正文与图文证据
-      //    先异步做真实解析（parseMaterial 是 async），再把结果交给同步的解构函数
-      const parsedDoc = await parseReportDocument(submission, this.storage);
-      const report = extractReportContent(submission, this.storage, parsedDoc);
+      // 4. 提取或解构学生报告正文与图文证据（真实解析，契约见 extractReportContent）
+      const report = await extractReportContent(submission, this.storage);
+
+      // 4.1 解析失败必须显式失败：绝不拿替代正文继续评分（返工单 P1-4）
+      if (report?.status === "failed") {
+        const error = new Error(`${report.errorCode || "PARSE_FAILED"}：${report.error || "报告解析失败。"}`);
+        error.errorCode = report.errorCode || "PARSE_FAILED";
+        throw error;
+      }
+
+      // 4.2 解析产物先落库：即使随后模型不可用导致评分失败，
+      //     教师仍能看到这份报告的真实解析结果。
+      //     （原先 parsedContent 只随成功响应返回一次，刷新即失，模型不可用时更是完全看不到）
+      const parsedContent = buildParsedContent(report);
+      if (parsedContent) {
+        this.store.updateSubmission(submissionId, { parsedContent });
+      }
 
       // 5. 调用大模型/评分引擎执行多模态逐项判定
       const rawEvaluation = await this._evaluateWithLLM(report, normalizedRubric, options);
@@ -428,7 +672,8 @@ export class AutoGraderPipelineService {
       // 6. 后端程序严格求和与各小项 [0, max] 边界保护
       const { grades, totalScore, maxScore, summary } = calculateGradesAndTotal(
         normalizedRubric,
-        rawEvaluation
+        rawEvaluation,
+        { documentVersionId: report.documentVersionId, structuredPages: report.structuredPages }
       );
 
       // 7. 评阅成功：原子更新状态为 review（进入待教师复核状态）
@@ -436,11 +681,7 @@ export class AutoGraderPipelineService {
         status: "review",
         grades,
         summary,
-        parsedContent: report.structuredPages ? {
-          title: report.title,
-          pages: report.pages,
-          structuredPages: report.structuredPages
-        } : null,
+        parsedContent,
         failure: null
       });
 
@@ -611,19 +852,33 @@ export class AutoGraderPipelineService {
 请对照给定的实验评分标准表（Rubric），逐项审查学生报告中的实验拓扑、操作步骤、图文证据与总结分析。
 严禁直接提供代写或伪造数据，给出客观给分、定位证据页码并撰写具体指导评语。
 
+【最重要的一条纪律】所有结论必须来自这份报告的真实内容：
+- 只能引用报告中**实际出现**的技术名词、步骤与数据。报告里没有提到的概念，一律不得写进 summary、comment、evidence 或覆盖点。
+- 不要套用同类实验的常见结论。例如报告全文没有抓包内容，就不应出现「抓包」「三次握手」这类描述。
+- 判断依据不足时如实说明，不要用推测填补空缺。
+
 请以合法 JSON 格式输出判定结果：
 {
-  "summary": "总体诊断评语（指出优点、主要失分项与改进方向）",
+  "summary": "总体诊断评语（指出优点、主要失分项与改进方向；只描述本报告实际写到的内容）",
   "items": [
     {
       "rubricId": "评分项 id，如 network-r0",
       "score": 18,
       "page": 1,
+      "judgment": "satisfied | partially_satisfied | not_satisfied | unable_to_judge",
+      "coveredPoints": ["报告中确实做到了的具体点，逐条列出"],
+      "missingPoints": ["评分标准要求、但报告中确实缺失的具体点"],
       "comment": "该采分点的具体评价与批注",
-      "evidence": "报告中对应的图文证据引用或文字摘要"
+      "evidence": "报告中对应的原文片段（直接摘录，不要改写）"
     }
   ]
-}`;
+}
+
+字段纪律：
+- judgment 必须**依据报告内容**判断，不得由分数反推；报告完全没有涉及该评分项时给 unable_to_judge。
+- coveredPoints / missingPoints 必须落到**具体子要求**，不得使用「完全达成 XXX」「基本完成 XXX 主要流程」这类概括话术；
+  确实没有可写的就返回空数组，不要为了填满而编造。
+- evidence 必须是报告里的**原文摘录**；找不到对应原文时留空字符串。`;
 
     const userPrompt = `【本次实验评分标准】：
 ${JSON.stringify(normalizedRubric, null, 2)}
@@ -648,6 +903,19 @@ ${report.diagrams?.length ? `\n- 报告附图/图表证据:\n${report.diagrams.m
       // 显式抛错以走下方规则判定降级（strictLLM 模式下则直接上抛给调用方）。
       if (resp.ok === false || !String(resp.content || "").trim()) {
         throw new Error(resp.error || "大模型返回空 content，无法解析评分结果");
+      }
+
+      // 【关键防线】未配置密钥时 llm.js 会走「智能 Mock 兜底」，它返回的是一套
+      // 与本次报告**毫无关系**的固定样例（写死的计网评分：拓扑/Wireshark/三次握手/RST）。
+      // 这种结果一旦入库，就是标准的「看起来正常的假内容」（返工单 P1-4），
+      // 且演示时必然穿帮。所以这里必须显式失败，绝不静默当成模型判断。
+      if (resp.mock === true) {
+        const err = new Error(
+          "模型未接入：当前为 Mock 兜底响应，与本次报告内容无关，不能作为评分依据。" +
+          "请配置 LLM_API_KEY（或 DEEPSEEK_API_KEY）后重试。"
+        );
+        err.errorCode = "LLM_NOT_CONFIGURED";
+        throw err;
       }
 
       let parsed = null;

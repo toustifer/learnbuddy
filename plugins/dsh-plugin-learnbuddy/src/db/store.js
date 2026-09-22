@@ -123,7 +123,9 @@ function mapSubmission(row) {
     summary: row.summary || "",
     history: row.history ? JSON.parse(row.history) : [],
     failure: row.failure ?? null,
-    annotations: row.annotations ? JSON.parse(row.annotations) : []
+    annotations: row.annotations ? JSON.parse(row.annotations) : [],
+    // 解析产物持久化：刷新页面后教师仍能看到报告，不必重新评分
+    parsedContent: row.parsed_content ? JSON.parse(row.parsed_content) : null
   };
 }
 
@@ -744,7 +746,8 @@ export class DatabaseStore {
         summary = ?,
         history = ?,
         failure = ?,
-        annotations = ?
+        annotations = ?,
+        parsed_content = ?
       WHERE id = ?
     `);
     stmt.run(
@@ -760,6 +763,7 @@ export class DatabaseStore {
       JSON.stringify(merged.history || []),
       merged.failure || null,
       JSON.stringify(merged.annotations || []),
+      merged.parsedContent ? JSON.stringify(merged.parsedContent) : null,
       id
     );
     return this.getSubmission(id);

@@ -9,6 +9,7 @@ import type { Rubric, ServerGrade, ServerReview, ReportAnnotation, ParsedReportC
 import { CourseOverview, dateLabel, latestSubmission, scoreOf, SubmissionStatus } from "./Academic";
 import { ReportViewer } from "../components/ReportViewer";
 import { RubricEvaluationPanel } from "../components/RubricEvaluationPanel";
+import { RubricRadarChart } from "../components/RubricRadarChart";
 
 export interface AssignmentAnalytics {
   assignmentId: string;
@@ -175,93 +176,63 @@ export function OnlineGrading({ id }: { id: string }) {
   } | null>(null);
   const [confirmBatch, setConfirmBatch] = useState(false);
   const [confirmPublish, setConfirmPublish] = useState(false);
-  const [activeHighlightQuote, setActiveHighlightQuote] = useState<string | undefined>();
+  const [activeHighlightQuote, setActiveHighlightQuote] = useState<string | null>(null);
   const [activePage, setActivePage] = useState<number | undefined>();
+  // 当前选中的评分项：用于右侧面板选中态与左侧原文定位的联动
+  const [activeRubricId, setActiveRubricId] = useState<string | null>(null);
   const [annotations, setAnnotations] = useState<ReportAnnotation[]>([]);
   const [parsedReport, setParsedReport] = useState<ParsedReportContent | null>(null);
   const saved = submissions.find((s) => s.id === selected);
-  /**
-   * 当前选中报告的复核结果。
-   *
-   * 必须声明在下面的 useEffect **之前**：该 effect 在挂载时就会读取 `current`，
-   * 若声明在后面，会抛 `ReferenceError: Cannot access 'current' before initialization`，
-   * 整个评阅页被错误边界接管，显示「页面暂时没有加载成功」。
-   */
+  // current 必须在使用它的 useEffect 之前声明，
+  // 否则依赖数组里的引用会触发 TDZ（Cannot access 'current' before initialization）
   const current = reviews[selected];
   useEffect(() => {
-    if (assignment && user!.role === "teacher" && saved?.grades.length && !reviews[selected]) {
+    // 有评分、或有持久化的解析产物，都应建立 review 视图：
+    // 解析与评分是两件事，模型不可用时教师仍应能看到报告内容
+    const hasReviewData = Boolean(saved && (saved.grades?.length || saved.parsedContent));
+    if (assignment && user!.role === "teacher" && hasReviewData && !reviews[selected]) {
       setReviews((previous) => ({ ...previous, [selected]: {
-        submissionId: saved.id, status: saved.status, totalScore: scoreOf(saved) || 0,
+        submissionId: saved!.id, status: saved!.status, totalScore: scoreOf(saved!) || 0,
         maxScore: assignment!.rubric.reduce((n, r) => n + r.max, 0),
-        grades: saved.grades.map((g) => ({ ...g, score: g.score ?? NaN })), summary: saved.summary, submission: saved,
+        grades: (saved!.grades || []).map((g) => ({ ...g, score: g.score ?? NaN })),
+        summary: saved!.summary,
+        parsedContent: saved!.parsedContent ?? null,
+        submission: saved!,
       } }));
     }
   }, [selected, saved, reviews, setReviews, assignment]);
 
-  // 当切换选中的报告或更新 review 时，同步加载/构造解析的报告内容结构，供左侧阅读器渲染
+  // 把后端返回的**真实解析产物**投影给左侧阅读器。
+  // 拿不到真实解析结果就显示「解析不可用」空态 —— 不在前端构造演示正文
+  //（返工单 P1-4：不允许生成看起来正常的假内容）。
   useEffect(() => {
     if (!saved) {
       setParsedReport(null);
       return;
     }
-    // assignment 由上层异步加载，未就绪时不构造报告结构（避免读 undefined.title）
-    if (!assignment) {
-      setParsedReport(null);
-      return;
-    }
-    // 如果后台 review 附带了 parsedContent 则直接使用；否则基于已有的 submission sample 或结构化元数据渲染结构
-    if ((current as any)?.parsedContent) {
-      setParsedReport((current as any).parsedContent);
-    } else {
-      // 构造成结构化多页文档展示，兼顾现存 sample 和新上传文件
-      const grades = current?.grades || saved.grades || [];
-      const p1Paragraphs = [
-        `报告提交文件: ${saved.fileName || "未知文件"} (学生: ${members.find((r) => r.student.id === saved.studentId)?.student.name || "未知"})`,
-        "【实验目的】掌握分布式系统的核心通信协议与并发调度模型，完成吞吐量测试与延迟分析。",
-        "【系统设计与架构】客户端采用事件驱动异步调用，服务端通过工作线程池统一调度，连接建立采用三次握手与心跳维持。"
-      ];
-      const p2Paragraphs = [
-        "【测试用例与评测分析】通过自研压力测试框架发起 10,000 次并发请求，吞吐量达到 14,200 QPS，P99 延迟稳定在 12.4ms。",
-        "【错误处理与恢复机制】当网络出现分区或丢包时，采用指数退避算法进行自动重试，并在熔断触发后降级返回备用缓存。",
-        grades.find((g) => g.evidence)?.evidence ? `[提取佐证] ${grades.find((g) => g.evidence)?.evidence}` : "实验中验证了并发队列的边界吞吐，记录了系统在过载保护下的自适应伸缩。"
-      ];
-      const p3Paragraphs = [
-        "【结果讨论与对比】相较于传统同步阻塞模型，异步事件驱动架构的内存开销降低 42%，整体 CPU 利用率更加平稳。",
-        "【课程总结与展望】后续可引入分布式追踪（Distributed Tracing）与动态限流熔断，进一步提升极端网络分区下的系统鲁棒性。"
-      ];
-
-      setParsedReport({
-        title: `${assignment.title} - ${saved.fileName || "实验报告"}`,
-        fileName: saved.fileName,
-        blobId: saved.blobId,
-        pages: [
-          {
-            pageNumber: 1,
-            title: "一、实验背景与系统架构设计",
-            paragraphs: p1Paragraphs,
-            diagram: "handshake",
-            caption: "图 1-1 客户端与服务端长连接三次握手及事件总线架构图"
-          },
-          {
-            pageNumber: 2,
-            title: "二、实验测试验证与指标分析",
-            paragraphs: p2Paragraphs,
-            diagram: "queue",
-            caption: "图 2-1 10,000 并发压力测试下的 QPS 与时延阶梯分布"
-          },
-          {
-            pageNumber: 3,
-            title: "三、系统总结与鲁棒性反思",
-            paragraphs: p3Paragraphs,
-            diagram: "index",
-            caption: "图 3-1 实验总结与模块时延对比"
-          }
-        ]
-      });
-    }
-  }, [selected, saved, current, assignment, members]);
+    const parsed = (current as { parsedContent?: ParsedReportContent } | undefined)?.parsedContent;
+    setParsedReport(parsed ?? null);
+    // 切换报告必须清掉上一份的定位、高亮与批注，避免沿用上一份的引用
+    setActivePage(undefined);
+    setActiveHighlightQuote(null);
+    setActiveRubricId(null);
+    setAnnotations([]);
+  }, [selected, saved, current]);
   const isBusy = !!pending || !!busy["server-grade:" + id];
   const rubric: Rubric[] = assignment?.rubric || [];
+  // 把后端评分项与作业 Rubric 对齐成面板需要的形状：
+  // 后端只返回 rubricId/score/comment/evidence/coverage，
+  // 标题与满分要从 Rubric 补齐，coverage 要从嵌套对象摊平
+  const panelGrades: ServerGrade[] = (current?.grades || []).map((grade) => {
+    const item = rubric.find((r) => r.id === grade.rubricId);
+    return {
+      ...grade,
+      title: grade.title || item?.title,
+      max: grade.max ?? item?.max,
+      coveredPoints: grade.coveredPoints ?? grade.coverage?.coveredPoints,
+      missingPoints: grade.missingPoints ?? grade.coverage?.missingPoints,
+    };
+  });
   if (!assignment || user!.role !== "teacher")
     return <Empty title="仅本课程教师可评阅" />;
   async function run(
@@ -466,62 +437,81 @@ export function OnlineGrading({ id }: { id: string }) {
         />
       )}
       {current && (
-        <div
-          className="review-split-layout"
-          style={{
-            display: "grid",
-            gridTemplateColumns: "minmax(0, 1.35fr) minmax(0, 1fr)",
-            gap: "20px",
-            marginTop: "18px",
-            alignItems: "start",
-          }}
-        >
-          {/* 左侧：报告阅读器（支持 PDF/Word 结构化解析、按页浏览、证据跳转与高亮、选中划词增加批注） */}
+        <div className="lb-review-split">
+          {/* 左侧：真实报告阅读器。只渲染后端解析产物，拿不到就显示空态 */}
           <div style={{ position: "sticky", top: "20px" }}>
-            <ReportViewer
-              report={parsedReport}
-              activePage={activePage}
-              highlightQuote={activeHighlightQuote}
-              annotations={annotations}
-              onAddAnnotation={(ann) =>
-                setAnnotations((prev) => [
-                  ...prev,
-                  {
-                    ...ann,
-                    id: `ann-${Date.now()}-${prev.length}`,
-                    createdAt: new Date().toISOString(),
-                  },
-                ])
-              }
-              onDeleteAnnotation={(annId) => setAnnotations((prev) => prev.filter((a) => a.id !== annId))}
-            />
+            {parsedReport && (parsedReport.structuredPages?.length ?? 0) > 0 ? (
+              <>
+                {parsedReport.source === "fixture" && (
+                  <div style={{ marginBottom: 10 }}>
+                    <span className="lb-chip warn">内置演示样例 · 不作为正式评分依据</span>
+                  </div>
+                )}
+                <ReportViewer
+                  fileName={parsedReport.title}
+                  pages={parsedReport.structuredPages}
+                  activePage={activePage ?? 1}
+                  highlightQuote={activeHighlightQuote}
+                  annotations={annotations}
+                  images={parsedReport.images || []}
+                  imageWarnings={parsedReport.imageWarnings || []}
+                  warnings={parsedReport.warnings || []}
+                  completeness={parsedReport.completeness}
+                  pagesEstimated={parsedReport.pagesEstimated === true}
+                  onPageChange={setActivePage}
+                  onAddAnnotation={(ann) =>
+                    setAnnotations((prev) => [
+                      ...prev,
+                      {
+                        ...ann,
+                        id: `anno-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                        createdAt: new Date().toISOString().slice(0, 16).replace("T", " "),
+                      },
+                    ])
+                  }
+                  onDeleteAnnotation={(annId) =>
+                    setAnnotations((prev) => prev.filter((a) => a.id !== annId))
+                  }
+                />
+              </>
+            ) : (
+              <div className="lb-empty">
+                <strong>解析不可用</strong>
+                <span>
+                  这份提交没有可渲染的真实解析结果。请先完成评阅以触发解析，或核对学生原件是否可读。
+                </span>
+              </div>
+            )}
           </div>
 
           {/* 右侧：Rubric 评分复核与 Teacher-in-the-loop 人机协同面板 */}
           <div>
             <RubricEvaluationPanel
-              current={current}
-              rubric={rubric}
-              isBusy={isBusy}
-              pending={pending}
+              grades={panelGrades}
+              activeRubricId={activeRubricId}
+              activeEvidenceQuote={activeHighlightQuote ?? null}
+              totalScore={current.totalScore}
+              maxScore={current.maxScore}
+              summary={current.summary}
+              isPublished={current.status === "published"}
+              isSaving={isBusy}
               confirmPublish={confirmPublish}
-              onLocateEvidence={(page, quote) => {
-                setActivePage(page);
-                setActiveHighlightQuote(quote);
-              }}
-              onPatchGrade={patchGrade}
-              onUpdateSummary={(summary) => {
-                setReviews((previous) => ({
-                  ...previous,
-                  [selected]: {
-                    ...previous[selected],
-                    summary,
-                  },
-                }));
-              }}
-              onPublish={() => void run("review-publish")}
               onSetConfirmPublish={setConfirmPublish}
-              validateGrades={() => validateServerGrades(current.grades, rubric)}
+              onSelectGrade={(grade) => {
+                // 点击评分项 → 左侧阅读器跳到该证据所在页并高亮
+                setActiveRubricId(grade.rubricId);
+                if (grade.page) setActivePage(grade.page);
+                setActiveHighlightQuote(grade.evidence || null);
+              }}
+              onScoreChange={(rubricId, score) => {
+                const index = current.grades.findIndex((g) => g.rubricId === rubricId);
+                if (index >= 0) patchGrade(index, { score });
+              }}
+              onCommentChange={(rubricId, comment) => {
+                const index = current.grades.findIndex((g) => g.rubricId === rubricId);
+                if (index >= 0) patchGrade(index, { comment });
+              }}
+              onConfirmGrades={() => void run("review-publish")}
             />
           </div>
         </div>
@@ -573,9 +563,7 @@ export function OnlineInsights() {
               <span>已发布作业均分</span>
             </div>
           </div>
-          <p className="inline-note">
-            数据来自服务器；均分、分数段和薄弱项只统计已发布反馈。教学建议为规则汇总，引用页码与图表需教师核对。
-          </p>
+          <p className="inline-note">均分、分数段与薄弱项仅统计已发布反馈。</p>
           {!query.data.totalPublishedSubmissionsCount && (
             <Empty
               title="暂无已发布反馈"
@@ -591,36 +579,71 @@ export function OnlineInsights() {
               </p>
               {assignment.publishedCount > 0 && (
                 <>
-                  <div className="score-distribution">
-                    {assignment.scoreDistribution.map((band) => (
-                      <div key={band.band}>
-                        <span>{band.band}</span>
-                        <meter
-                          min={0}
-                          max={Math.max(1, assignment.publishedCount)}
-                          value={band.count}
-                        />
-                        <strong>{band.count} 人</strong>
-                      </div>
-                    ))}
-                  </div>
-                  <h3>各评分点表现</h3>
-                  {assignment.rubricAnalytics.map((item) => (
-                    <div className="rubric-performance" key={item.rubricId}>
-                      <span>{item.title}</span>
-                      <strong>
-                        {item.avgScore} / {item.max}
-                      </strong>
-                      <meter min={0} max={1} value={item.scoreRate} />
+                  <div className="lb-analysis-grid">
+                    <div className="lb-chart-card">
+                      <h3>评分项达成率</h3>
+                      <RubricRadarChart
+                        dimensions={assignment.rubricAnalytics.map((item) => ({
+                          label: item.title,
+                          value: item.scoreRate,
+                          detail: `${item.avgScore} / ${item.max} 分`,
+                        }))}
+                      />
                     </div>
-                  ))}
-                  {assignment.teachingSuggestions.map((suggestion, i) => (
-                    <article className="teaching-suggestion" key={i}>
-                      <h3>{suggestion.topic}</h3>
-                      <p>{suggestion.suggestion}</p>
-                      <p>{suggestion.actionPlan}</p>
-                    </article>
-                  ))}
+
+                    <div className="lb-chart-card">
+                      <h3>分数段分布</h3>
+                      <p>已发布 {assignment.publishedCount} 份</p>
+                      <div className="lb-bands">
+                        {assignment.scoreDistribution.map((band) => (
+                          <div className="lb-band" key={band.band}>
+                            <span>{band.band}</span>
+                            <div className="lb-band-track">
+                              <i
+                                style={{
+                                  width: `${(band.count / Math.max(1, assignment.publishedCount)) * 100}%`,
+                                }}
+                              />
+                            </div>
+                            <strong>{band.count} 人</strong>
+                          </div>
+                        ))}
+                      </div>
+
+                      <h3 style={{ marginTop: 20 }}>评分点表现</h3>
+                      <div className="lb-rubric-bars">
+                        {assignment.rubricAnalytics.map((item) => {
+                          const rate = Math.min(1, Math.max(0, item.scoreRate));
+                          return (
+                            <div className="lb-rubric-bar" key={item.rubricId}>
+                              <span title={item.title}>{item.title}</span>
+                              <div className="lb-band-track">
+                                <i
+                                  className={rate < 0.4 ? "alert" : rate < 0.6 ? "warn" : ""}
+                                  style={{ width: `${rate * 100}%` }}
+                                />
+                              </div>
+                              <strong>
+                                {item.avgScore}/{item.max}
+                              </strong>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  {assignment.teachingSuggestions.length > 0 && (
+                    <div className="lb-suggestions">
+                      {assignment.teachingSuggestions.map((suggestion, i) => (
+                        <article className="lb-suggestion" key={i}>
+                          <h3>{suggestion.topic}</h3>
+                          <p>{suggestion.suggestion}</p>
+                          <p>{suggestion.actionPlan}</p>
+                        </article>
+                      ))}
+                    </div>
+                  )}
                 </>
               )}
               <button
