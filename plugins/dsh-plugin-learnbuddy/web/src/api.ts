@@ -254,6 +254,20 @@ export const ask = (
  * 这两个端点由浏览器直接发起（`<img src>` / `<a href>`），无法附加 Authorization 头，
  * 因此把令牌放进查询串。服务端仍会校验令牌，只是取令牌的位置不同。
  */
+/**
+ * 「可内嵌渲染」的预览地址。
+ *
+ * 与 `fileUrl` 的区别：
+ *   fileUrl    → 永远给你**原件**（保真、用于下载/新窗口打开）
+ *   previewUrl → 给**浏览器能直接渲染的东西**：PDF/图片原样，
+ *                Word 之类由后端转成 PDF 再给（按 blobId 缓存）
+ *
+ * 所以「原件」视图要内嵌时用 previewUrl，拿不到再退回 fileUrl。
+ */
+export const previewUrl = (id: string) =>
+  `${API_BASE}/files/${encodeURIComponent(id)}/preview` +
+  (accessToken ? `?token=${encodeURIComponent(accessToken)}` : "");
+
 export const fileUrl = (id: string, download = false) =>
   `${API_BASE}/files/${encodeURIComponent(id)}/${download ? "download" : "view"}` +
   (accessToken ? `?token=${encodeURIComponent(accessToken)}` : "");

@@ -166,7 +166,13 @@ export interface ReportImageRef {
 /** 评阅记录里携带的真实解析产物投影（后端 extractReportContent → parsedContent） */
 export interface ParsedReportContent {
   title: string;
+  /** 阅读器渲染出来的结构页数（我们切分的结果，不等于原件页数） */
   pages: number;
+  /**
+   * **原件本身**的真实页数（转 PDF 后数出来的）。
+   * null / 缺省表示没取到 —— 此时不要冒充真实值，继续按「估算」提示。
+   */
+  originalPages?: number | null;
   /** 页数由标题结构估算，仅作参考，不得当作真实页码展示 */
   pagesEstimated?: boolean;
   /** document = 真实解析；fixture = 内置演示样例，不得混入正式评分与统计 */

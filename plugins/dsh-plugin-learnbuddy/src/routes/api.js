@@ -11,6 +11,7 @@
  */
 
 import fs from "node:fs";
+import { ensurePdfPreview, isConvertible, isInlinePreviewable } from "../services/doc-convert.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { MaterialParserService } from "../services/material-parser.js";
@@ -618,6 +619,85 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
 
         await new Promise((resolve, reject) => {
           const stream = fs.createReadStream(filePath);
+          stream.on("error", (err) => {
+            if (!res.headersSent) {
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+            resolve();
+          });
+          res.on("finish", resolve);
+          res.on("close", resolve);
+          res.on("error", reject);
+          stream.pipe(res);
+        });
+        return;
+      } catch (err) {
+        return sendJson(res, 500, { ok: false, error: err.message });
+      }
+    }
+
+    // ==========================================
+    // 4.1 可用于**内嵌渲染**的预览 (/files/:id/preview)
+    //
+    // 与 /view 的区别：
+    //   /view     永远给**原件**（保真、可下载）
+    //   /preview  给**浏览器能直接渲染的东西** —— PDF/图片原样，
+    //             Word 之类先转成 PDF（按 blobId 缓存，同一个文件只转一次）
+    //
+    // 为什么不让 /view 自己转：那样「下载原件」会拿到一份不是原件的 PDF，口径就乱了。
+    // ==========================================
+    const previewMatch = pathname.match(/^\/api\/learnbuddy\/files\/([^/]+)\/preview$/);
+    if (req.method === "GET" && previewMatch) {
+      const fileId = decodeURIComponent(previewMatch[1]);
+      const filePath = storage.getFilePath(fileId);
+      if (!filePath) {
+        return sendJson(res, 404, { ok: false, error: "文件不存在或已被删除" });
+      }
+
+      const meta = storage.getFileMetadata ? storage.getFileMetadata(fileId) : null;
+      let servePath = filePath;
+      let serveType = (meta && meta.mimeType) || getMimeType(filePath);
+      let converted = false;
+
+      if (!isInlinePreviewable(fileId)) {
+        if (!isConvertible(fileId)) {
+          return sendJson(res, 415, {
+            ok: false,
+            error: "这个格式既不能内嵌渲染，也无法转换成可预览的 PDF"
+          });
+        }
+        const conv = await ensurePdfPreview({
+          blobId: fileId,
+          sourcePath: filePath,
+          uploadDir: storage.uploadDir
+        });
+        if (!conv.ok) {
+          // 转换失败就如实说，不糊一个空白框
+          return sendJson(res, 502, {
+            ok: false,
+            error: `无法生成内嵌预览：${conv.error || "转换失败"}。可改用「打开原件」查看。`
+          });
+        }
+        servePath = conv.pdfPath;
+        serveType = "application/pdf";
+        converted = true;
+      }
+
+      try {
+        const stat = fs.statSync(servePath);
+        res.writeHead(200, {
+          "Content-Type": serveType,
+          "Content-Disposition": "inline",
+          "Content-Length": stat.size,
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": "public, max-age=86400",
+          // 让前端知道这份预览是不是转换来的（转换产物页数才是真实页数）
+          "X-LearnBuddy-Preview": converted ? "converted" : "original"
+        });
+
+        await new Promise((resolve, reject) => {
+          const stream = fs.createReadStream(servePath);
           stream.on("error", (err) => {
             if (!res.headersSent) {
               res.writeHead(500, { "Content-Type": "application/json" });

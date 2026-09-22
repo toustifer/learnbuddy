@@ -20,6 +20,7 @@
 import { MultimodalLLMClient } from "./llm.js";
 import { AutoGraderEngine } from "./grader.js";
 import { MaterialParserService } from "./material-parser.js";
+import { ensurePdfPreview, countPdfPages, isConvertible } from "./doc-convert.js";
 
 /**
  * 标杆计算机网络实验评分表（Wireshark 协议分析与三次握手）
@@ -264,6 +265,38 @@ async function persistReportImages(rawImages, storage, submission) {
  *
  * @returns {Promise<object|null>} 未提供提交记录时返回 null
  */
+
+/**
+ * 取**原件的真实页数**。
+ *
+ * 为什么单独做：`pages` 是「阅读器渲染出来的结构页数」，那是我们切分的结果；
+ * 而教师核对证据时说的「第 3 页」指的是**原件本身**的第 3 页。两者不一定相等
+ * （实测那份演示报告：解析器估 2 页，原件其实是 1 页）。
+ *
+ * 做法：原件是 PDF 就直接数；是 Word 之类就转成 PDF 再数（转换结果按 blobId 缓存，
+ * 与「原件内嵌」共用同一份，不重复转）。拿不到就返回 null —— **不猜**。
+ */
+async function resolveOriginalPages(submission, storage) {
+  try {
+    if (!submission?.blobId || !storage?.getFilePath) return null;
+    const sourcePath = storage.getFilePath(submission.blobId);
+    if (!sourcePath) return null;
+
+    if (/\.pdf$/i.test(submission.blobId)) return countPdfPages(sourcePath);
+    if (!isConvertible(submission.blobId)) return null;
+
+    const conv = await ensurePdfPreview({
+      blobId: submission.blobId,
+      sourcePath,
+      uploadDir: storage.uploadDir
+    });
+    return conv.ok ? (conv.pages ?? null) : null;
+  } catch {
+    // 拿不到真实页数不影响评分 —— 如实留 null，让前端继续显示「估算」
+    return null;
+  }
+}
+
 export async function extractReportContent(submission, storage = null, options = {}) {
   if (!submission) return null;
 
@@ -332,6 +365,9 @@ export async function extractReportContent(submission, storage = null, options =
 
   const structuredPages = buildStructuredPages(text);
 
+  // 原件的**真实页数**（能取到就取到，取不到留 null 并继续显示「估算」）
+  const originalPages = await resolveOriginalPages(submission, storage);
+
   return {
     // partial 表示正文拿到了但内容有缺失（内嵌资产被跳过等），如实向上传递
     status: parsed.status === "partial" ? "partial" : "parsed",
@@ -340,6 +376,8 @@ export async function extractReportContent(submission, storage = null, options =
     content: text,
     // 页数以实际渲染出的页面结构为准，避免「总页数」与阅读器里的页数对不上
     pages: structuredPages.length,
+    // 原件的真实页数（null 表示没取到 —— 此时不冒充真实值）
+    originalPages,
     pagesEstimated: parsed.pagesEstimated === true,
     // 只有真实落盘成功的图片才会出现在这里，不再凭空生成图注与「已提取截图」结论
     images,
@@ -364,6 +402,8 @@ function buildParsedContent(report) {
   return {
     title: report.title,
     pages: report.pages,
+    // 原件真实页数；null 时前端继续按「估算」提示，不冒充
+    originalPages: report.originalPages ?? null,
     pagesEstimated: report.pagesEstimated === true,
     source: report.source,
     hasImages: report.hasImages === true,

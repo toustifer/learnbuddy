@@ -71,3 +71,6 @@ plugins/dsh-plugin-learnbuddy/session/
 # 缺了它「真实解析链路」就跑不起来。由 scripts/make-demo-report.mjs 生成。
 plugins/dsh-plugin-learnbuddy/uploads/*
 !plugins/dsh-plugin-learnbuddy/uploads/e38a62ddd6e08aaa825e3dbb1a125f8ea8d35c7e4973fe6e76209604b05eb6ed.docx
+
+# 文档预览转换产物（LibreOffice 转出的 PDF 缓存，可按 blobId 重建）
+plugins/dsh-plugin-learnbuddy/previews/

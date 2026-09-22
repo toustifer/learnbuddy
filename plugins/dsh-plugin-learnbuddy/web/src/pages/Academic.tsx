@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowDownToLine, ArrowLeft, ArrowRight, Plus, RefreshCw, Search, X } from "lucide-react";
 import { Select } from "@radix-ui/themes";
-import { LIVE_MODE, fileUrl } from "../api";
+import { LIVE_MODE, fileUrl, previewUrl } from "../api";
 import { visibleAssignments, visibleCourses } from "../domain";
 import { enrollments, users } from "../seed";
 import { useStore } from "../store-context";
@@ -220,10 +220,10 @@ export function OnlineReport({ id }: { id: string }) {
           <section className="fb-block">
             <h2>我的提交原件</h2>
             {CAN_INLINE.test(submission.blobId) ? (
-              <iframe className="fb-source-frame" src={fileUrl(submission.blobId)} title="提交原件" />
+              <iframe className="fb-source-frame" src={previewUrl(submission.blobId)} title="提交原件" />
             ) : (
               <p className="fb-source-note">
-                这份是 {submission.blobId.split(".").pop()?.toUpperCase()} 格式，浏览器无法直接内嵌预览。
+                这份是 {submission.blobId.split(".").pop()?.toUpperCase()} 格式，无法在这里内嵌显示。
                 <a href={fileUrl(submission.blobId)} target="_blank" rel="noreferrer">在新窗口打开原件</a>
               </p>
             )}
@@ -244,8 +244,8 @@ export function OnlineReport({ id }: { id: string }) {
   );
 }
 
-/** 浏览器能直接内嵌渲染的格式（与 ReportViewer 保持一致） */
-const CAN_INLINE = /\.(pdf|png|jpe?g|gif|webp|bmp|svg)$/i;
+/** 能在页面里内嵌出原件的格式（与 ReportViewer 保持一致：可直接渲染的 + 后端可转换的） */
+const CAN_INLINE = /\.(pdf|png|jpe?g|gif|webp|bmp|svg|docx?|odt|rtf|txt|pptx?|odp|xlsx?|ods|csv)$/i;
 
 
 export function CourseOverview() {

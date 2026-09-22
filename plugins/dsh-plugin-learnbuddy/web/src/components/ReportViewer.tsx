@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { DocumentPage, ReportAnnotation, ReportImageRef } from "../types";
-import { fileUrl } from "../api";
+import { fileUrl, previewUrl } from "../api";
 
 export interface ReportViewerProps {
   fileName?: string;
@@ -23,6 +23,8 @@ export interface ReportViewerProps {
   warnings?: string[];
   /** partial 表示正文拿到了、但有内容缺失（不等于解析失败） */
   completeness?: "complete" | "partial";
+  /** 原件本身的真实页数（转 PDF 后数出来的）；null/缺省表示没取到 */
+  originalPages?: number | null;
   /** 页数由标题/段落结构估算 */
   pagesEstimated?: boolean;
   onPageChange?: (page: number) => void;
@@ -30,16 +32,20 @@ export interface ReportViewerProps {
   onDeleteAnnotation?: (id: string) => void;
 }
 
-/**
- * 浏览器能直接内嵌渲染的格式。
- *
- * 只有这些才走 `<iframe>`；其余（如 Word）浏览器会下载或显示空白，
- * 与其糊一个白框，不如如实说明并给出「打开原件」。
- */
+/** 浏览器能**直接**渲染的格式（不用后端转换） */
 const INLINE_PREVIEWABLE = /\.(pdf|png|jpe?g|gif|webp|bmp|svg)$/i;
 
+/** 后端能用 LibreOffice 转成 PDF 的格式 */
+const CONVERTIBLE = /\.(docx?|odt|rtf|txt|pptx?|odp|xlsx?|ods|csv)$/i;
+
+/**
+ * 能不能在页面里内嵌出原件？
+ *
+ * 直接的（PDF/图片）与**可转换的**（Word 等）都算能 ——
+ * 后者由后端 `/preview` 转成 PDF 再给。只有既不能直接渲染、又转不了的格式才退回「打开原件」。
+ */
 const canPreviewInline = (blobId?: string | null) =>
-  Boolean(blobId && INLINE_PREVIEWABLE.test(String(blobId)));
+  Boolean(blobId && (INLINE_PREVIEWABLE.test(String(blobId)) || CONVERTIBLE.test(String(blobId))));
 
 /** 取扩展名用于提示文案 */
 const extOf = (blobId?: string | null) =>
@@ -56,6 +62,7 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({
   imageWarnings = [],
   warnings = [],
   completeness = "complete",
+  originalPages = null,
   pagesEstimated = false,
   onPageChange,
   onAddAnnotation,
@@ -231,14 +238,14 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({
           {canPreviewInline(blobId) ? (
             <iframe
               className="lb-source-frame"
-              src={fileUrl(blobId as string)}
+              src={previewUrl(blobId as string)}
               title={`${fileName} 原件`}
             />
           ) : (
             <div className="lb-source-fallback">
-              <strong>这份原件是 {extOf(blobId) || "该"} 格式，浏览器无法直接内嵌预览</strong>
+              <strong>这份原件是 {extOf(blobId) || "该"} 格式，无法在这里内嵌显示</strong>
               <p>
-                Word 这类格式需要先转成 PDF 才能在这里显示，服务器当前未安装转换工具。
+                浏览器不能直接渲染这种格式，后端也无法把它转成可预览的 PDF。
                 你可以打开原件查看，或切到「解析文本」看提取出来的内容（注意：那不是原件的版式）。
               </p>
               <div className="lb-source-actions">
@@ -403,7 +410,12 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({
           </ul>
         )}
 
-        {pagesEstimated && <p className="lb-note">页码为估算值</p>}
+        {/* 页数：拿到原件真实页数就报真实值；拿不到才说「估算」，不冒充 */}
+        {originalPages
+          ? <p className="lb-note">原件共 {originalPages} 页（真实页数）</p>
+          : pagesEstimated
+            ? <p className="lb-note">页码为估算值</p>
+            : null}
       </div>
 
       {/* 划词批注弹窗 */}

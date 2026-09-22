@@ -460,6 +460,7 @@ export function OnlineGrading({ id }: { id: string }) {
                   imageWarnings={parsedReport?.imageWarnings || []}
                   warnings={parsedReport?.warnings || []}
                   completeness={parsedReport?.completeness}
+                  originalPages={parsedReport?.originalPages ?? null}
                   pagesEstimated={parsedReport?.pagesEstimated === true}
                   onPageChange={setActivePage}
                   onAddAnnotation={(ann) =>
