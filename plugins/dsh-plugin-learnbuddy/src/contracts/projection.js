@@ -52,8 +52,13 @@ export const SUBMISSION_VIEW_FIELDS = {
    *
    * `history` 必须在这里：它装着历次评分的 `grades` 与 `summary`，
    * 是黑名单写法最容易漏掉的一条泄漏通道。
+   *
+   * `parsedContent` 也必须在「已发布前对学生不可见」这一组里 ——
+   * 它含报告正文的完整分页结构（`structuredPages`），属 D2 的「依据」范畴。
+   * 同时它是教师复核的凭据：落库后刷新页面仍能看到报告，不必重新评分。
+   * （2026-09-22 修复：此前漏了这一项，导致上述两个目的都达不到。）
    */
-  graded: ["grades", "summary", "history"],
+  graded: ["grades", "summary", "history", "parsedContent"],
 
   /**
    * 仅教师可见。**学生视图永不包含**（不是置空，是整个键都不出现）。
@@ -64,7 +69,7 @@ export const SUBMISSION_VIEW_FIELDS = {
 };
 
 /** 未发布时，评分相关字段的置空值。保持键存在，形状才稳定（对 Agent 也更好用）。 */
-const EMPTIED = { grades: [], summary: "", history: [] };
+const EMPTIED = { grades: [], summary: "", history: [], parsedContent: null };
 
 /**
  * 教师视图：完整对象（白名单内的字段全给，值不裁剪）。

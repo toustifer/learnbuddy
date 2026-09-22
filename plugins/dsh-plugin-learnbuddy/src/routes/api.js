@@ -232,6 +232,26 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
    * @param {{fallbackToken?: string}} [options]
    * @returns {{ok: true, user: object} | {ok: false, status: number, error: string}}
    */
+  /**
+   * 给评分类响应补上契约层的证据引用。
+   *
+   * 为什么需要：评分**最初就是在这些接口里产生的**，契约要求「凡结论必挂证据引用」。
+   * 此前只有 `/submissions*` 做了派生，评分接口直接透传 ⇒ 刚评完分的那一次响应里没有引用，
+   * 前端要么拿不到、要么得再请求一次。这里统一补上，四个评分端点共用一处。
+   */
+  const withEvidenceRefsOnResult = (result) => {
+    if (!result || typeof result !== "object") return result;
+    if (result.submission) {
+      const submission = withSubmissionEvidenceRefs(result.submission);
+      return { ...result, submission, evidenceRefs: collectFromSubmissions([submission]) };
+    }
+    if (Array.isArray(result.submissions)) {
+      const submissions = withSubmissionsEvidenceRefs(result.submissions);
+      return { ...result, submissions, evidenceRefs: collectFromSubmissions(submissions) };
+    }
+    return result;
+  };
+
   const requireActor = (req, options = {}) =>
     resolveActorFromRequest(store, req, { queryToken: options.fallbackToken || "" });
 
@@ -925,7 +945,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
 
       try {
         const result = await autoGraderPipeline.gradeSubmission(submissionId, gradeOptions);
-        return sendJson(res, 200, result);
+        return sendJson(res, 200, withEvidenceRefsOnResult(result));
       } catch (err) {
         return sendJson(res, 400, {
           ok: false,
@@ -953,7 +973,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
           concurrency: concurrency || batchOptions.concurrency || 2,
           ...batchOptions
         });
-        return sendJson(res, 200, result);
+        return sendJson(res, 200, withEvidenceRefsOnResult(result));
       } catch (err) {
         return sendJson(res, 400, {
           ok: false,
@@ -978,7 +998,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
 
       try {
         const result = await autoGraderPipeline.retryGrading(submissionId, retryOptions);
-        return sendJson(res, 200, result);
+        return sendJson(res, 200, withEvidenceRefsOnResult(result));
       } catch (err) {
         return sendJson(res, 400, {
           ok: false,
@@ -1015,7 +1035,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
           strictRange: strictRange === true,
           annotations: Array.isArray(annotations) ? annotations : undefined
         });
-        return sendJson(res, 200, result);
+        return sendJson(res, 200, withEvidenceRefsOnResult(result));
       } catch (err) {
         return sendJson(res, resolveErrorStatus(err.message), {
           ok: false,
@@ -1111,7 +1131,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         const result = await feedbackAnalyticsService.computeAssignmentAnalytics(assignmentId, {
           skipLLM
         });
-        return sendJson(res, 200, result);
+        return sendJson(res, 200, withEvidenceRefsOnResult(result));
       } catch (err) {
         return sendJson(res, resolveErrorStatus(err.message), {
           ok: false,
@@ -1133,7 +1153,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         const result = await feedbackAnalyticsService.computeCourseFeedbackOverview(courseId, {
           skipLLM
         });
-        return sendJson(res, 200, result);
+        return sendJson(res, 200, withEvidenceRefsOnResult(result));
       } catch (err) {
         return sendJson(res, resolveErrorStatus(err.message), {
           ok: false,

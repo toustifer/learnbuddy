@@ -251,3 +251,50 @@ test("投影·端到端 - store 读出的提交已按契约裁剪，history 通�
     store.close();
   }
 });
+
+// ===========================================================================
+// 解析产物也要过投影（2026-09-22 修复）
+// ===========================================================================
+
+test("投影·解析产物 - parsedContent 必须在白名单里（否则教师刷新后看不到报告）", () => {
+  assert.ok(
+    SUBMISSION_VIEW_FIELDS.graded.includes("parsedContent"),
+    "parsedContent 含报告正文结构，属「已发布前对学生不可见」这一组；" +
+      "漏掉它会让教师刷新页面后看不到报告，也让证据引用的段反查拿不到 structuredPages"
+  );
+});
+
+test("投影·解析产物 - 教师始终能看到", () => {
+  const sub = {
+    id: "s1",
+    status: "review",
+    grades: [{ rubricId: "r0", score: 10 }],
+    parsedContent: { source: "document", structuredPages: [{ paragraphs: ["正文"] }] }
+  };
+  const view = toTeacherSubmissionView(sub);
+  assert.equal(view.parsedContent.source, "document");
+  assert.equal(view.parsedContent.structuredPages.length, 1, "教师要看得到正文结构才能复核");
+});
+
+test("投影·解析产物 - 学生未发布时置空（D2：依据也不该提前可见）", () => {
+  const sub = {
+    id: "s1",
+    status: "review",
+    grades: [{ rubricId: "r0", score: 10 }],
+    parsedContent: { source: "document", structuredPages: [{ paragraphs: ["正文"] }] }
+  };
+  const view = toStudentSubmissionView(sub);
+  assert.equal(view.parsedContent, null, "未发布时不得看到报告正文结构");
+  assert.deepEqual(view.grades, []);
+});
+
+test("投影·解析产物 - 学生已发布时可见", () => {
+  const sub = {
+    id: "s1",
+    status: "published",
+    grades: [{ rubricId: "r0", score: 10 }],
+    parsedContent: { source: "document", structuredPages: [{ paragraphs: ["正文"] }] }
+  };
+  const view = toStudentSubmissionView(sub);
+  assert.equal(view.parsedContent.source, "document");
+});
