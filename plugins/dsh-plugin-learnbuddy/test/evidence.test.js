@@ -21,6 +21,7 @@ import {
   EVIDENCE_KINDS,
   deriveDocumentVersionId,
   buildLocator,
+  parseLocator,
   createEvidenceRef,
   isTraceable,
   collectEvidenceRefs,
@@ -384,4 +385,82 @@ test("溯源·端到端 - 建议分带上指向报告的引用；无报告版本
   } finally {
     await t.close();
   }
+});
+
+// ===========================================================================
+// 6. 与评分链的紧凑写法归一化（合并两条实现后新增）
+// ===========================================================================
+
+test("溯源·归一化 - 紧凑字符串定位能转成结构化对象", () => {
+  assert.deepEqual(parseLocator("page=4&block=2"), { page: 4, block: 2 });
+  assert.deepEqual(parseLocator("page=4"), { page: 4 });
+  assert.deepEqual(parseLocator("slide=3"), { slide: 3 });
+  assert.deepEqual(parseLocator({ page: 5, block: 1 }), { page: 5, block: 1 }, "已是对象则原样返回");
+  assert.deepEqual(parseLocator(null), {});
+  assert.deepEqual(parseLocator(""), {});
+});
+
+test("溯源·归一化 - 非法的值一律忽略，不猜不编", () => {
+  assert.deepEqual(parseLocator("page=abc&block=2"), { block: 2 }, "页码解析不出来就丢掉，但不能丢掉 block");
+  assert.deepEqual(parseLocator("page=0&block=-1"), {}, "0 与负数都不是合法定位");
+  assert.deepEqual(parseLocator("foo=1&page=3"), { page: 3 }, "未知键忽略，不塞进结果");
+  assert.deepEqual(parseLocator("page=&block="), {}, "空值忽略");
+  assert.deepEqual(parseLocator("page=2&page=9"), { page: 9 }, "重复键以后者为准（不静默合并）");
+});
+
+test("溯源·归一化 - 评分链的 evidenceRef 被归一化，且保住页内段精度", () => {
+  const ref = evidenceRefFromGrade(
+    {
+      rubricId: "r0",
+      evidence: "使用 EXPLAIN 查看执行计划，记录访问类型与扫描行数。",
+      // 评分链给出的是紧凑写法（block = 该页第几段，由模型摘录反查得到）
+      evidenceRef: {
+        documentVersionId: "d".repeat(64) + ".docx",
+        locator: "page=4&block=2",
+        kind: "paragraph",
+        quote: "使用 EXPLAIN 查看执行计划，记录访问类型与扫描行数。",
+        assetId: null
+      }
+    },
+    null
+  );
+
+  assert.ok(ref, "应当生成引用");
+  assert.equal(ref.documentVersionId, "d".repeat(64) + ".docx", "版本用评分链算好的那个");
+  assert.equal(ref.locator.page, 4, "页码");
+  assert.equal(ref.locator.block, 2, "页内段序号（这正是从评分链继承来的精度）");
+  assert.equal(
+    typeof ref.locator,
+    "object",
+    "定位必须是结构化对象，而不是 `page=4&block=2` 这种字符串"
+  );
+  assert.equal(ref.blockId, "p4-b2", "定位到段时块标识应体现页与段");
+  assert.equal(isTraceable(ref), true);
+});
+
+test("溯源·归一化 - 只到页时块标识退化为按评分项标识", () => {
+  const ref = evidenceRefFromGrade(
+    { rubricId: "r7", page: 2, evidence: "摘要", evidenceRef: { locator: "page=2", kind: "page" } },
+    "v1"
+  );
+  assert.equal(ref.locator.page, 2);
+  assert.equal(ref.locator.block, null, "只到页时不应伪造段号");
+  assert.equal(ref.blockId, "grade-r7");
+});
+
+test("溯源·归一化 - 没有 evidenceRef 时回退到 page/evidence 字段（向后兼容）", () => {
+  const ref = evidenceRefFromGrade({ rubricId: "r1", page: 3, evidence: "旧格式的摘录" }, "v2");
+  assert.ok(ref, "旧格式仍应生成引用");
+  assert.equal(ref.locator.page, 3);
+  assert.equal(ref.locator.block, null, "旧格式只有页码，不得凭空补段号");
+  assert.equal(ref.documentVersionId, "v2");
+});
+
+test("溯源·归一化 - 只差一段的两条引用不能撞 id", () => {
+  const mk = (block) =>
+    evidenceRefFromGrade(
+      { rubricId: "r0", evidence: "同一段摘录", evidenceRef: { locator: `page=4&block=${block}` } },
+      "v"
+    );
+  assert.notEqual(mk(1).id, mk(2).id, "页内段不同必须区分开");
 });

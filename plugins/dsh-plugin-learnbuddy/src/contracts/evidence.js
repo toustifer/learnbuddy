@@ -49,6 +49,40 @@ export function deriveDocumentVersionId(source) {
 }
 
 /**
+ * 把「键值字符串」形式的定位归一化成结构化对象。
+ *
+ * 背景：评分链在产生建议分时用的是紧凑写法 `page=4` / `page=4&block=2`
+ * （`block` = 该页第几段，由模型给的摘录反查得到）。那是**产生端**的写法；
+ * 契约层对外统一用**结构化对象**，因为对象可以直接被程序/Agent 读，
+ * 而字符串每次都要再解析一遍。这里就是两者的唯一转换点。
+ *
+ * 未知键一律忽略（不猜、不编），解析不出来就返回空对象。
+ *
+ * @param {string|object|null} locator
+ * @returns {object} 可直接交给 buildLocator 的输入
+ */
+export function parseLocator(locator) {
+  if (!locator) return {};
+  if (typeof locator === "object") return locator;
+
+  const out = {};
+  for (const part of String(locator).split("&")) {
+    const [rawKey, rawValue] = part.split("=");
+    const key = String(rawKey || "").trim();
+    const value = String(rawValue ?? "").trim();
+    if (!key || !value) continue;
+    // 只认已知的键，其余忽略 —— 宁可少定位，也不猜
+    if (key === "page" || key === "slide" || key === "block") {
+      const n = Number(value);
+      if (Number.isFinite(n) && n > 0) out[key] = n;
+    } else if (key === "sheet" || key === "range" || key === "figure") {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/**
  * 构造 `locator`：**只放真实存在的定位信息**。
  *
  * 不同文档类型有不同定位方式（见规范与《03》第 4 节）：
@@ -97,6 +131,8 @@ export function buildLocator(input = {}) {
     // 注意：这里**没有** `page: input.page || 1` 这类兜底 —— 不认识就留 null
     page: asPage(input.page),
     slide: asPage(input.slide),
+    // 页内段序号（该页第几段）—— 比只给页码精确一档
+    block: asPage(input.block),
     headingPath: headingPath.length ? headingPath : null,
     sheet: asText(input.sheet),
     range: asText(input.range),
@@ -136,7 +172,7 @@ export function createEvidenceRef(input = {}) {
   return {
     // 稳定 ID：定位相同的证据，id 相同
     id: `ev_${shortHash(
-      [documentVersionId, blockId, assetId, kind, locator.page, locator.figure, locator.sheet, locator.range, quote]
+      [documentVersionId, blockId, assetId, kind, locator.page, locator.block, locator.figure, locator.sheet, locator.range, quote]
         .map((v) => (v === null || v === undefined ? "" : String(v)))
         .join("|")
     )}`,
@@ -167,6 +203,7 @@ export function isTraceable(ref) {
   return Boolean(
     locator.page ||
       locator.slide ||
+      locator.block ||
       (Array.isArray(locator.headingPath) && locator.headingPath.length) ||
       locator.sheet ||
       locator.figure ||
@@ -244,15 +281,34 @@ export function evidenceRefsFromMaterialContext(context, documentVersionId) {
  */
 export function evidenceRefFromGrade(grade, documentVersionId) {
   if (!grade || typeof grade !== "object") return null;
-  const quote = typeof grade.evidence === "string" ? grade.evidence.trim() : "";
+
+  // 评分链已经在 grade 上挂了紧凑形式的证据引用（locator 是 `page=N&block=M` 字符串）。
+  // 这里把它**归一化成契约层的结构化对象**，并保留它的页内段精度 ——
+  // 这是两条实现合并后「取更好的那个」的结果：结构用契约层的，精度用它给的。
+  const raw = grade.evidenceRef;
+  const locator = parseLocator(raw?.locator);
+  const page = locator.page || grade.page;
+  const block = locator.block || null;
+  const quote =
+    (typeof raw?.quote === "string" && raw.quote.trim()) ||
+    (typeof grade.evidence === "string" ? grade.evidence.trim() : "");
+
   const ref = createEvidenceRef({
-    documentVersionId,
-    blockId: grade.rubricId ? `grade-${grade.rubricId}` : null,
-    kind: "text",
-    locator: { page: grade.page },
-    quote: quote || null
+    // 版本优先用评分链算好的那个（它就是被评阅报告的内容哈希）
+    documentVersionId: raw?.documentVersionId || documentVersionId,
+    // 块标识：定位到段时用 `p{页}-b{段}`，只到页时退化成按评分项标识
+    blockId: block
+      ? `p${page}-b${block}`
+      : grade.rubricId
+        ? `grade-${grade.rubricId}`
+        : null,
+    kind: EVIDENCE_KINDS.includes(raw?.kind) ? raw.kind : block ? "text" : "text",
+    locator: { page, block },
+    quote: quote || null,
+    assetId: raw?.assetId || null
   });
-  // 连摘录都没有的评分项，不生成"看起来有证据"的引用
+
+  // 连摘录都没有、也定位不到任何位置的评分项，不生成「看起来有证据」的引用
   return isTraceable(ref) && (quote || ref.locator.page) ? ref : null;
 }
 
