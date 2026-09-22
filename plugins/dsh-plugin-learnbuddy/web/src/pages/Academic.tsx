@@ -142,27 +142,111 @@ export function OnlineReport({ id }: { id: string }) {
   const submission = state.submissions.find((s) => s.id === id && (user!.role === "teacher" || s.studentId === user!.id));
   const assignment = state.assignments.find((a) => a.id === submission?.assignmentId);
   if (!submission || !assignment) return <div className="page"><AcademicNotice />{!academicLoading && <Empty title="暂时无法查看这份报告" action={<button className="text-button" onClick={() => go({ page: "assignments" })}>返回我的作业</button>} />}</div>;
+
   const published = submission.status === "published";
-  return <div className="page report-feedback-page">
-    <button className="text-button" onClick={() => go({ page: "assignments" })}><ArrowLeft size={14} />返回作业</button>
-    <PageHeading title={assignment.title} description={submission.fileName} action={<SubmissionStatus submission={submission} />} />
-    <div className="feedback-layout">
-      <section>
-        <div className="feedback-score"><div><span>老师核定成绩</span><strong>{published ? scoreOf(submission) ?? "—" : "待发布"}</strong></div><span>满分 {assignment.rubric.reduce((n, r) => n + r.max, 0)} · {dateLabel(submission.submittedAt)} 提交</span></div>
-        {published ? <>
-          <section className="feedback-summary"><h2>老师反馈</h2><p>{submission.summary || "老师未填写综合评语。"}</p></section>
-          <h2 className="section-title">评分明细</h2>
-          <div className="table-scroll"><table className="data-table rubric-result"><thead><tr><th>评分项与反馈</th><th className="numeric">得分</th></tr></thead><tbody>{assignment.rubric.map((r) => {
-            const grade = submission.grades.find((g) => g.rubricId === r.id);
-            return <tr key={r.id}><td><strong>{r.title}</strong><p>{grade?.comment || "暂无逐项评语"}</p>{grade?.evidence && <details><summary>查看原文依据{grade.page ? ` · 第 ${grade.page} 页` : ""}</summary><blockquote>{grade.evidence}</blockquote></details>}</td><td className="numeric"><strong>{grade?.score ?? "—"}</strong> / {r.max}</td></tr>;
-          })}</tbody></table></div>
-        </> : <Empty title="报告已提交，等待老师发布反馈" description="评分与评语会在老师复核后统一显示。" />}
-        <div className="online-actions">{submission.blobId && <a className="button secondary" href={fileUrl(submission.blobId)} target="_blank" rel="noreferrer">查看提交原件</a>}{published && <button className="button secondary" onClick={() => setAssistant((v) => !v)}>{assistant ? "收起反馈助手" : "请助手解释反馈"}</button>}</div>
-      </section>
+  const maxScore = assignment.rubric.reduce((n, r) => n + r.max, 0);
+  const score = scoreOf(submission);
+
+  /**
+   * 学生端的反馈页。
+   *
+   * 2026-09-23 重写，修三个实际问题：
+   *  1. **逐项评语原先塞在表格里** —— 列窄、长评语换行难看，还容易在容器里被截断。
+   *     改成一列卡片，评语是主角，分数是配角。
+   *  2. **页面滚不到底** —— 摘要与明细各自撑开，容器又带了溢出不明确的外层。
+   *     现在整页交给页面级滚动，不再有内层裁剪容器。
+   *  3. **原件只能跳出去看** —— 能内嵌的格式（PDF / 图片）直接内嵌，看不了的原样给链接。
+   */
+  return (
+    <div className="page report-feedback-page">
+      <button className="text-button" onClick={() => go({ page: "assignments" })}><ArrowLeft size={14} />返回作业</button>
+      <PageHeading title={assignment.title} description={submission.fileName} action={<SubmissionStatus submission={submission} />} />
+
+      <div className="fb-wrap">
+        {/* 成绩条 */}
+        <div className="fb-score">
+          <div className="fb-score-main">
+            <span>老师核定成绩</span>
+            <strong>{published ? (score ?? "—") : "待发布"}</strong>
+            {published && <em>/ {maxScore}</em>}
+          </div>
+          <span className="fb-score-meta">
+            {dateLabel(submission.submittedAt)} 提交
+            {!published && " · 老师复核后统一公布"}
+          </span>
+        </div>
+
+        {published ? (
+          <>
+            {/* 综合反馈：不截断、不折叠，换行保留 */}
+            <section className="fb-block">
+              <h2>老师反馈</h2>
+              <p className="fb-overall">{submission.summary || "老师未填写综合评语。"}</p>
+            </section>
+
+            {/* 逐项反馈：一列卡片，评语不经表格 */}
+            <section className="fb-block">
+              <h2>评分明细（{assignment.rubric.length} 项）</h2>
+              <ul className="fb-items">
+                {assignment.rubric.map((r) => {
+                  const grade = submission.grades.find((g) => g.rubricId === r.id);
+                  return (
+                    <li key={r.id} className="fb-item">
+                      <div className="fb-item-head">
+                        <strong>{r.title}</strong>
+                        <span className="fb-item-score">
+                          {grade?.score ?? "—"} <em>/ {r.max}</em>
+                        </span>
+                      </div>
+                      <p className="fb-item-comment">{grade?.comment || "暂无逐项评语"}</p>
+                      {grade?.evidence ? (
+                        <details className="fb-item-evidence">
+                          <summary>看老师的判分依据{grade.page ? `（第 ${grade.page} 页）` : ""}</summary>
+                          <blockquote>{grade.evidence}</blockquote>
+                        </details>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          </>
+        ) : (
+          <Empty title="报告已提交，等待老师发布反馈" description="评分与评语会在老师复核后统一显示。" />
+        )}
+
+        {/* 原件：能内嵌就内嵌，不能就说明并给链接 */}
+        {submission.blobId ? (
+          <section className="fb-block">
+            <h2>我的提交原件</h2>
+            {CAN_INLINE.test(submission.blobId) ? (
+              <iframe className="fb-source-frame" src={fileUrl(submission.blobId)} title="提交原件" />
+            ) : (
+              <p className="fb-source-note">
+                这份是 {submission.blobId.split(".").pop()?.toUpperCase()} 格式，浏览器无法直接内嵌预览。
+                <a href={fileUrl(submission.blobId)} target="_blank" rel="noreferrer">在新窗口打开原件</a>
+              </p>
+            )}
+          </section>
+        ) : null}
+
+        {published && (
+          <div className="fb-actions">
+            <button className="button secondary" onClick={() => setAssistant((v) => !v)}>
+              {assistant ? "收起反馈助手" : "请助手解释反馈"}
+            </button>
+          </div>
+        )}
+      </div>
+
       {assistant && published && <aside className="feedback-assistant"><DshAssistant report={submission} /></aside>}
     </div>
-  </div>;
+  );
 }
+
+/** 浏览器能直接内嵌渲染的格式（与 ReportViewer 保持一致） */
+const CAN_INLINE = /\.(pdf|png|jpe?g|gif|webp|bmp|svg)$/i;
+
 
 export function CourseOverview() {
   const { academic, state, user, go } = useStore();

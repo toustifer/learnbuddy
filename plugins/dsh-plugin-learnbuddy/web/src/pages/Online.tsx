@@ -440,24 +440,27 @@ export function OnlineGrading({ id }: { id: string }) {
         <div className="lb-review-split">
           {/* 左侧：真实报告阅读器。只渲染后端解析产物，拿不到就显示空态 */}
           <div style={{ position: "sticky", top: "20px" }}>
-            {parsedReport && (parsedReport.structuredPages?.length ?? 0) > 0 ? (
+            {/* 只要有原件或有解析产物，就渲染阅读器 ——
+                未评分的提交也应当能先看原件（教师本来就要先读报告再打分）。 */}
+            {(parsedReport?.structuredPages?.length ?? 0) > 0 || saved?.blobId ? (
               <>
-                {parsedReport.source === "fixture" && (
+                {parsedReport?.source === "fixture" && (
                   <div style={{ marginBottom: 10 }}>
                     <span className="lb-chip warn">内置演示样例 · 不作为正式评分依据</span>
                   </div>
                 )}
                 <ReportViewer
-                  fileName={parsedReport.title}
-                  pages={parsedReport.structuredPages}
+                  fileName={parsedReport?.title || saved?.fileName}
+                  blobId={saved?.blobId}
+                  pages={parsedReport?.structuredPages || []}
                   activePage={activePage ?? 1}
                   highlightQuote={activeHighlightQuote}
                   annotations={annotations}
-                  images={parsedReport.images || []}
-                  imageWarnings={parsedReport.imageWarnings || []}
-                  warnings={parsedReport.warnings || []}
-                  completeness={parsedReport.completeness}
-                  pagesEstimated={parsedReport.pagesEstimated === true}
+                  images={parsedReport?.images || []}
+                  imageWarnings={parsedReport?.imageWarnings || []}
+                  warnings={parsedReport?.warnings || []}
+                  completeness={parsedReport?.completeness}
+                  pagesEstimated={parsedReport?.pagesEstimated === true}
                   onPageChange={setActivePage}
                   onAddAnnotation={(ann) =>
                     setAnnotations((prev) => [
@@ -476,9 +479,9 @@ export function OnlineGrading({ id }: { id: string }) {
               </>
             ) : (
               <div className="lb-empty">
-                <strong>解析不可用</strong>
+                <strong>没有可显示的内容</strong>
                 <span>
-                  这份提交没有可渲染的真实解析结果。请先完成评阅以触发解析，或核对学生原件是否可读。
+                  这份提交既没有原件（blobId），也没有可渲染的解析结果。请核对学生是否真的上传了文件。
                 </span>
               </div>
             )}

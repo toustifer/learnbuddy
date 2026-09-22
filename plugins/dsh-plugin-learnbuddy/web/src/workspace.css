@@ -294,3 +294,188 @@
   .list-toolbar .tabs { gap:15px; }
   .list-toolbar .tabs button { font-size:11px; }
 }
+
+
+/* =================================================================
+   学生反馈页（2026-09-23 重写）
+   为什么要重写：旧版是「grid 两列 + 单元格内套表格 + table-scroll 溢出」
+   三者叠加 —— 表格高度被 grid 行高限制住，**长评语在表格里被裁掉、且滚不动**。
+   现在整页随内容自然撑开，交给页面级滚动；逐项反馈不再是表格，而是一列卡片。
+   ================================================================= */
+.report-feedback-page {
+  /* 明确不做高度约束：内容多长就多长，靠外层 .main 滚 */
+  display: block;
+  min-height: 0;
+}
+/* 打开反馈助手时排成两列；内容列必须 min-width:0，否则长文会把格子撑爆 */
+.report-feedback-page:has(.feedback-assistant) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 24px;
+  align-items: start;
+}
+.fb-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-width: 0;
+}
+
+/* 成绩条 */
+.fb-score {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.fb-score-main {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+.fb-score-main > span {
+  font-size: 11px;
+  color: #8a9582;
+}
+.fb-score-main strong {
+  font-size: 34px;
+  line-height: 1;
+  font-weight: 600;
+  color: #3c6745;
+  font-variant-numeric: tabular-nums;
+}
+.fb-score-main em {
+  font-style: normal;
+  font-size: 13px;
+  color: #9aa891;
+}
+.fb-score-meta {
+  font-size: 11px;
+  color: #8a9582;
+}
+
+/* 区块 */
+.fb-block > h2 {
+  font-size: 14px;
+  font-weight: 550;
+  color: #2d4137;
+  margin: 0 0 12px;
+}
+/* 综合反馈：**不截断、不折叠、保留换行** —— 老师的原话应当完整读到 */
+.fb-overall {
+  margin: 0;
+  padding: 16px 18px;
+  background: #f7f9f5;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 2;
+  color: #46574a;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 逐项反馈：一列卡片（不再是表格） */
+.fb-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.fb-item {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.fb-item-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.fb-item-head strong {
+  font-size: 13px;
+  font-weight: 550;
+  color: #2d4137;
+  min-width: 0;
+}
+.fb-item-score {
+  flex-shrink: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #3c6745;
+  font-variant-numeric: tabular-nums;
+}
+.fb-item-score em {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 450;
+  color: #9aa891;
+}
+.fb-item-comment {
+  margin: 9px 0 0;
+  font-size: 12.5px;
+  line-height: 2;
+  color: #4c5a52;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.fb-item-evidence {
+  margin-top: 10px;
+  border-top: 1px dashed #e6ebe2;
+  padding-top: 9px;
+}
+.fb-item-evidence summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: #7f8f77;
+}
+.fb-item-evidence blockquote {
+  margin: 9px 0 0;
+  padding: 10px 12px;
+  background: #f7f9f4;
+  border-left: 2px solid #dce5cf;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.95;
+  color: #56684f;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 原件 */
+.fb-source-frame {
+  width: 100%;
+  height: 620px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+.fb-source-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.95;
+  color: #74827a;
+}
+.fb-source-note a {
+  margin-left: 6px;
+  color: #3c6745;
+}
+
+.fb-actions {
+  display: flex;
+  gap: 10px;
+}
+
+@media (max-width: 900px) {
+  .report-feedback-page:has(.feedback-assistant) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
