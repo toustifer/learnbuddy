@@ -464,3 +464,107 @@ test("溯源·归一化 - 只差一段的两条引用不能撞 id", () => {
     );
   assert.notEqual(mk(1).id, mk(2).id, "页内段不同必须区分开");
 });
+
+// ===========================================================================
+// 7. 页内段反查已搬到契约层（原在评分链里，合并后按「结构只留一套」搬过来）
+// ===========================================================================
+
+const PAGES = [
+  {
+    pageNumber: 1,
+    heading: "实验记录",
+    paragraphs: [
+      "先准备测试数据与目标查询。",
+      "使用 EXPLAIN 查看执行计划，记录访问类型与扫描行数。",
+      "写入约二十万行数据，分别在建索引前后执行同一组查询。"
+    ]
+  }
+];
+
+test("溯源·段反查 - 用摘录能反查出「第几页第几段」", () => {
+  const ref = evidenceRefFromGrade(
+    { rubricId: "r0", page: 1, evidence: "使用 EXPLAIN 查看执行计划，记录访问类型与扫描行数。" },
+    "v1",
+    PAGES
+  );
+  assert.equal(ref.locator.page, 1);
+  assert.equal(ref.locator.block, 2, "应当是第 1 页第 2 段");
+  assert.equal(ref.blockId, "p1-b2");
+});
+
+test("溯源·段反查 - 标点与空白不同也能对上（归一化）", () => {
+  const ref = evidenceRefFromGrade(
+    { rubricId: "r0", page: 1, evidence: "使用EXPLAIN查看执行计划，记录访问类型与扫描行数" },
+    "v1",
+    PAGES
+  );
+  assert.equal(ref.locator.block, 2, "去掉空格与标点后应当能对上");
+});
+
+test("溯源·段反查 - 反查不到就留 null，不硬凑一个段号", () => {
+  const ref = evidenceRefFromGrade(
+    { rubricId: "r0", page: 1, evidence: "这段文字不在报告里，模型编的。" },
+    "v1",
+    PAGES
+  );
+  assert.equal(ref.locator.page, 1, "页码仍然保留");
+  assert.equal(ref.locator.block, null, "反查不到就必须留 null");
+  assert.equal(ref.blockId, "grade-r0", "退化成按评分项标识");
+});
+
+test("溯源·段反查 - 没有摘录 / 没有分页结构 / 页码越界，都不产生段号", () => {
+  assert.equal(evidenceRefFromGrade({ rubricId: "r0", page: 1 }, "v", PAGES).locator.block, null);
+  assert.equal(
+    evidenceRefFromGrade({ rubricId: "r0", page: 1, evidence: "使用 EXPLAIN" }, "v", null).locator.block,
+    null
+  );
+  assert.equal(
+    evidenceRefFromGrade({ rubricId: "r0", page: 9, evidence: "使用 EXPLAIN" }, "v", PAGES).locator.block,
+    null
+  );
+});
+
+test("溯源·段反查 - 端到端：带解析产物的提交能派生出带段号的引用", () => {
+  const submission = {
+    id: "sub-1",
+    blobId: "a".repeat(64) + ".docx",
+    parsedContent: { structuredPages: PAGES },
+    grades: [
+      {
+        rubricId: "r0",
+        page: 1,
+        evidence: "写入约二十万行数据，分别在建索引前后执行同一组查询。"
+      }
+    ]
+  };
+
+  const enriched = withSubmissionEvidenceRefs(submission);
+  const ref = enriched.grades[0].evidenceRefs[0];
+  assert.equal(ref.locator.page, 1);
+  assert.equal(ref.locator.block, 3, "应当反查到第 3 段");
+  assert.equal(ref.documentVersionId, submission.blobId, "版本来自提交的原件");
+});
+
+test("溯源·段反查 - 没有解析产物时退化为页码级，不报错", () => {
+  const enriched = withSubmissionEvidenceRefs({
+    id: "sub-2",
+    blobId: "b".repeat(64) + ".pdf",
+    grades: [{ rubricId: "r0", page: 2, evidence: "一段摘录" }]
+  });
+  const ref = enriched.grades[0].evidenceRefs[0];
+  assert.equal(ref.locator.page, 2);
+  assert.equal(ref.locator.block, null, "没有分页结构就只到页，不猜段号");
+});
+
+test("溯源·段反查 - 没有原件版本时不产出引用（不编版本）", () => {
+  // 契约硬规则：没有文档版本，宁可不产出引用，也不伪造一个让它看起来成立
+  const enriched = withSubmissionEvidenceRefs({
+    id: "sub-3",
+    grades: [{ rubricId: "r0", page: 2, evidence: "一段摘录" }]
+  });
+  assert.equal(
+    enriched.grades[0].evidenceRefs,
+    undefined,
+    "没有版本就不该有引用 —— 否则溯源链是假的"
+  );
+});

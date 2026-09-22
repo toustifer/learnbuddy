@@ -661,53 +661,36 @@ test("AutoGrader - 关注级别与分数解耦", () => {
   assert.equal(clean.attentionLevel, "clear");
 });
 
-test("AutoGrader - 证据升级为可定位引用", () => {
+test("AutoGrader - 页码只认真实值：模型没给就留 null（契约层「不猜位置」）", () => {
   const rubric = [{ id: "r0", title: "执行计划分析", max: 30, criterion: "解释观察结果。" }];
-  const structuredPages = [
-    {
-      pageNumber: 1,
-      heading: "实验记录",
-      paragraphs: ["先准备测试数据与目标查询。", "使用 EXPLAIN 查看执行计划，记录访问类型与扫描行数。"]
-    }
+  // 模型既没给 page，也没给 evidence
+  const raw = { items: [{ rubricId: "r0", score: 20, comment: "评语" }] };
+
+  const { grades } = calculateGradesAndTotal(rubric, raw);
+  const g = grades[0];
+
+  assert.equal(g.page, null, "拿不到页码必须留 null，不能按评分项序号猜一个");
+  assert.equal(g.evidence, "", "没有原文摘录就不编「核验报告第 N 页…」这类模板句");
+  // 证据引用已收归契约层（响应层派生），grade 里不该再出现自建字段
+  assert.equal(g.evidenceRef, undefined, "grade 不应自建 evidenceRef");
+});
+
+test("AutoGrader - 页码原样交给契约层，不掺估算值", () => {
+  const rubric = [
+    { id: "r0", title: "对比结果与证据", max: 30, criterion: "提供截图。" },
+    { id: "r1", title: "性能解释与总结", max: 20, criterion: "给出结论。" }
   ];
   const raw = {
     items: [
-      {
-        rubricId: "r0",
-        score: 20,
-        page: 1,
-        evidence: "使用 EXPLAIN 查看执行计划，记录访问类型与扫描行数。"
-      }
+      { rubricId: "r0", score: 25, page: 2, evidence: "建索引后访问类型由全表扫描变为索引查找。" },
+      { rubricId: "r1", score: 10, comment: "第二项：模型没给页码" }
     ]
   };
 
-  const { grades } = calculateGradesAndTotal(rubric, raw, {
-    documentVersionId: "e38a62dd…b6ed.docx",
-    structuredPages
-  });
-  const ref = grades[0].evidenceRef;
+  const { grades } = calculateGradesAndTotal(rubric, raw);
 
-  assert.equal(ref.documentVersionId, "e38a62dd…b6ed.docx", "必须能回答「依据哪一版报告」");
-  assert.equal(ref.kind, "paragraph", "摘录能在原文里反查到段落时应精确到段");
-  assert.equal(ref.locator, "page=1&block=2", "locator 必须是可解析的键值形式");
-  assert.ok(ref.quote.includes("EXPLAIN"), "引用要带原文摘录");
-});
-
-test("AutoGrader - 摘录反查不到时退回页码级，不硬凑位置", () => {
-  const rubric = [{ id: "r0", title: "性能解释与总结", max: 20, criterion: "给出结论。" }];
-  const structuredPages = [{ pageNumber: 1, heading: "", paragraphs: ["与摘录完全无关的内容"] }];
-  const raw = {
-    items: [{ rubricId: "r0", score: 10, page: 1, evidence: "报告里并不存在的这句话，用于测试反查失败" }]
-  };
-
-  const { grades } = calculateGradesAndTotal(rubric, raw, {
-    documentVersionId: "v2.docx",
-    structuredPages
-  });
-  const ref = grades[0].evidenceRef;
-
-  assert.equal(ref.locator, "page=1", "定位不到就只报页码，不能编一个 block 数字");
-  assert.equal(ref.kind, "page");
+  assert.equal(grades[0].page, 2, "模型给了页码就用真实值");
+  assert.equal(grades[1].page, null, "模型没给就留 null，供契约层判定为不可溯源");
 });
 
 test(

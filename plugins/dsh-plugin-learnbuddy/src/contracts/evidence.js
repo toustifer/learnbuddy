@@ -49,6 +49,40 @@ export function deriveDocumentVersionId(source) {
 }
 
 /**
+ * 文本归一化：用于「用摘录反查原文位置」。
+ *
+ * 只做无害的规整（去空白、转小写、去掉常见标点），目的是让模型给的摘录
+ * 能和解析出来的段落对上。**不做模糊匹配** —— 对不上就是定位不到。
+ */
+function normalizeForMatch(text) {
+  return String(text || "")
+    .replace(/\s+/g, "")
+    .replace(/[，。、；：！？,.;:!?"'“”‘’（）()【】\[\]]/g, "")
+    .toLowerCase();
+}
+
+/**
+ * 用模型给出的原文摘录，反查它在第几页的第几段。
+ *
+ * 这是原来放在评分链里的能力（合并后按「全系统只保留一套结构」的要求搬到契约层）。
+ * **反查不到就返回 null** —— 定位不到就说定位不到，不硬凑一个段号出来。
+ *
+ * @param {Array<{paragraphs?: string[]}>|null} structuredPages 解析产物里的分页结构
+ * @param {number|null} page 页码（1 起）
+ * @param {string} quote 模型给出的原文摘录
+ * @returns {number|null} 段序号（1 起）；定位不到返回 null
+ */
+function lookupBlock(structuredPages, page, quote) {
+  const needle = normalizeForMatch(quote).slice(0, 24);
+  if (!needle) return null;
+  if (!Number.isFinite(page) || page < 1) return null;
+  const entry = Array.isArray(structuredPages) ? structuredPages[page - 1] : null;
+  const paragraphs = Array.isArray(entry?.paragraphs) ? entry.paragraphs : [];
+  const index = paragraphs.findIndex((text) => normalizeForMatch(text).includes(needle));
+  return index >= 0 ? index + 1 : null;
+}
+
+/**
  * 把「键值字符串」形式的定位归一化成结构化对象。
  *
  * 背景：评分链在产生建议分时用的是紧凑写法 `page=4` / `page=4&block=2`
@@ -279,33 +313,39 @@ export function evidenceRefsFromMaterialContext(context, documentVersionId) {
  * @param {string|null} documentVersionId 被评阅文档（报告）的版本
  * @returns {object|null}
  */
-export function evidenceRefFromGrade(grade, documentVersionId) {
+export function evidenceRefFromGrade(grade, documentVersionId, structuredPages = null) {
   if (!grade || typeof grade !== "object") return null;
 
-  // 评分链已经在 grade 上挂了紧凑形式的证据引用（locator 是 `page=N&block=M` 字符串）。
-  // 这里把它**归一化成契约层的结构化对象**，并保留它的页内段精度 ——
-  // 这是两条实现合并后「取更好的那个」的结果：结构用契约层的，精度用它给的。
-  const raw = grade.evidenceRef;
-  const locator = parseLocator(raw?.locator);
-  const page = locator.page || grade.page;
-  const block = locator.block || null;
+  // ① 兼容已落库的历史数据。
+  //    早期评分链会在 grade 上自建一份紧凑引用（locator 是 `page=N&block=M` 字符串）。
+  //    那个写法已按契约层要求移除了（全系统只保留结构化 EvidenceRefV1），
+  //    但**历史快照里可能还带着它** —— 这里仍然能读，不因为升级就把旧证据丢掉。
+  const legacy = grade.evidenceRef;
+  const legacyLocator = parseLocator(legacy?.locator);
+
   const quote =
-    (typeof raw?.quote === "string" && raw.quote.trim()) ||
-    (typeof grade.evidence === "string" ? grade.evidence.trim() : "");
+    (typeof grade.evidence === "string" ? grade.evidence.trim() : "") ||
+    (typeof legacy?.quote === "string" ? legacy.quote.trim() : "");
+  const page = legacyLocator.page || (Number(grade.page) >= 1 ? Number(grade.page) : null);
+
+  // ② 页内段：用模型给出的原文摘录**反查**它在第几段。
+  //    这个能力原先在评分链里，现在按「结构只留一套」的要求搬到了契约层 ——
+  //    这样既不丢精度，也不必再维护第二份引用实现。
+  const block =
+    legacyLocator.block || lookupBlock(structuredPages, page, quote);
 
   const ref = createEvidenceRef({
-    // 版本优先用评分链算好的那个（它就是被评阅报告的内容哈希）
-    documentVersionId: raw?.documentVersionId || documentVersionId,
+    documentVersionId: legacy?.documentVersionId || documentVersionId,
     // 块标识：定位到段时用 `p{页}-b{段}`，只到页时退化成按评分项标识
     blockId: block
       ? `p${page}-b${block}`
       : grade.rubricId
         ? `grade-${grade.rubricId}`
         : null,
-    kind: EVIDENCE_KINDS.includes(raw?.kind) ? raw.kind : block ? "text" : "text",
+    kind: "text",
     locator: { page, block },
     quote: quote || null,
-    assetId: raw?.assetId || null
+    assetId: legacy?.assetId || null
   });
 
   // 连摘录都没有、也定位不到任何位置的评分项，不生成「看起来有证据」的引用
@@ -328,11 +368,13 @@ export function withSubmissionEvidenceRefs(submission) {
   if (!grades.length) return submission;
 
   const documentVersionId = deriveDocumentVersionId(submission);
+  // 解析产物里带着分页结构，用它可以按摘录反查出「第几页第几段」
+  const structuredPages = submission.parsedContent?.structuredPages || null;
   let changed = false;
   const enriched = grades.map((grade) => {
     // 已经有了就不重复推导（幂等）
     if (Array.isArray(grade.evidenceRefs)) return grade;
-    const ref = evidenceRefFromGrade(grade, documentVersionId);
+    const ref = evidenceRefFromGrade(grade, documentVersionId, structuredPages);
     if (!ref) return grade;
     changed = true;
     return { ...grade, evidenceRefs: [ref] };
