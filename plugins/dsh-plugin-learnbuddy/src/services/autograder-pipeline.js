@@ -384,7 +384,7 @@ function buildParsedContent(report) {
  * 1. 严禁信任大模型口算的 totalScore，必须由后端程序严格遍历小项累加！
  * 2. 各小项得分必须严格限制在 [0, rubricItem.max] 范围之内。
  */
-export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}, options = {}) {
+export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}) {
   const rawItems = rawEvaluation.items || rawEvaluation.rubricChecks || rawEvaluation.grades || [];
   const summary = rawEvaluation.summary || rawEvaluation.summaryReview || "实验报告评阅完成。";
 
@@ -426,17 +426,21 @@ export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}, op
     // 【核心约束：程序严格累加计算，严禁使用模型口算】
     calculatedTotalScore += itemScore;
 
-    const page = matched && Number(matched.page) >= 1
-      ? Number(matched.page)
-      : Math.min(i + 1, 3);
+    // 页码只采用模型给出的**真实值**，拿不到就留 null。
+    // 契约层硬规则：「不猜位置」—— 编一个页码比留空更糟（留空调用方知道"没有定位"，
+    // 编页码会让它以为定位到了）。而且 `grade.page` 会被 evidenceRefFromGrade
+    // 直接当作 locator，在这里填估算值等于把假定位混进溯源链路。
+    const page = matched && Number(matched.page) >= 1 ? Number(matched.page) : null;
 
     const comment = matched && matched.comment
       ? String(matched.comment).trim()
       : `对照标准「${rubricItem.title}」，完成度良好，已达到实验基本要求。`;
 
-    const evidence = matched && matched.evidence
-      ? String(matched.evidence).trim()
-      : `核验报告第 ${page} 页相关文字描述与实验截图证据。`;
+    // 证据同样不编：没有模型的原文摘录就留空。
+    // 旧实现在这里拼「核验报告第 N 页相关文字描述与实验截图证据。」——
+    // 读起来像引用，其实是标题套模板；契约层要求 quote 是**可核对的原文摘录**，
+    // 拼出来的句子不满足，也不该让它生成"看起来有证据"的引用。
+    const evidence = matched && matched.evidence ? String(matched.evidence).trim() : "";
 
     // v0.3: 判定字段优先采纳模型输出；缺什么就如实留空，
     // 不再由分数反推、不再用标题套模板（返工单 P1：judgment / 覆盖度 / 关注级别要与分数解耦）
@@ -462,13 +466,8 @@ export function calculateGradesAndTotal(normalizedRubric, rawEvaluation = {}, op
       page,
       comment,
       evidence,
-      // 可定位引用：回答「依据哪一版报告的哪个位置」，而不只是一段孤立文字
-      evidenceRef: buildEvidenceRef({
-        documentVersionId: options.documentVersionId || null,
-        page,
-        quote: evidence,
-        structuredPages: options.structuredPages || null
-      }),
+      // 证据引用不在此处自建：由契约层（src/contracts/evidence.js）在响应层
+      // 统一派生（withSubmissionEvidenceRefs），全系统只保留一套 EvidenceRefV1 结构。
       judgment,
       /** model = 模型明确给出的判定；score_fallback = 模型未给，由分数兜底 */
       judgmentSource,
@@ -539,44 +538,14 @@ function decideAttentionLevel({ judgment, missingPoints }) {
   return "clear";
 }
 
-/**
- * 组装可定位的证据引用（返工单 P1-3 方向）。
- *
- * locator 采用可解析的键值形式：
- *   - `page=N`          只定位到页
- *   - `page=N&block=M`  进一步定位到该页第 M 段（用模型给出的原文摘录反查）
- *
- * 反查不到就退回页码级 —— 定位不到就说定位不到，不硬凑一个 block 数字出来。
- */
-function buildEvidenceRef({ documentVersionId, page, quote, structuredPages }) {
-  const ref = {
-    documentVersionId: documentVersionId || null,
-    locator: `page=${page}`,
-    kind: "page",
-    quote: String(quote || "").trim(),
-    assetId: null
-  };
-
-  const needle = normalizeForMatch(ref.quote).slice(0, 24);
-  if (!needle) return ref;
-
-  const pageEntry = Array.isArray(structuredPages) ? structuredPages[page - 1] : null;
-  const paragraphs = Array.isArray(pageEntry?.paragraphs) ? pageEntry.paragraphs : [];
-  const blockIndex = paragraphs.findIndex((p) => normalizeForMatch(p).includes(needle));
-
-  if (blockIndex >= 0) {
-    ref.locator = `page=${page}&block=${blockIndex + 1}`;
-    ref.kind = "paragraph";
-  }
-  return ref;
-}
-
-/** 匹配用归一化：去掉空白与常见中英文标点，避免因排版差异漏匹配 */
-function normalizeForMatch(text) {
-  return String(text || "")
-    .replace(/\s+/g, "")
-    .replace(/[，。；：、（）「」【】“”‘’"'.,;:()[\]!?！？]/g, "");
-}
+// 证据引用（EvidenceRefV1）的实现统一收归契约层 `src/contracts/evidence.js`，
+// 由响应层 `withSubmissionEvidenceRefs` 从 grade 派生。
+//
+// 本文件不再自建 evidenceRef。原先那份自定义实现有两个问题：
+//   1. 结构与契约层不同（`locator` 是字符串 `"page=1&block=4"`，契约层是对象 `{page,…}`），
+//      两套并存会让调用方无从取用；
+//   2. 页码是**估算**的（拿不到就按评分项序号猜），而契约层的硬规则是「不猜位置」——
+//      更糟的是 `evidenceRefFromGrade` 会直接采用 `grade.page`，估算值会被当成真实定位。
 
 /**
  * AutoGrader 评阅流水线服务主类
@@ -672,8 +641,7 @@ export class AutoGraderPipelineService {
       // 6. 后端程序严格求和与各小项 [0, max] 边界保护
       const { grades, totalScore, maxScore, summary } = calculateGradesAndTotal(
         normalizedRubric,
-        rawEvaluation,
-        { documentVersionId: report.documentVersionId, structuredPages: report.structuredPages }
+        rawEvaluation
       );
 
       // 7. 评阅成功：原子更新状态为 review（进入待教师复核状态）

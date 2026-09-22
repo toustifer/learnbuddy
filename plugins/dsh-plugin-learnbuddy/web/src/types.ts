@@ -205,8 +205,6 @@ export interface ServerGrade {
   page?: number;
   comment?: string;
   evidence?: string;
-  /** 可定位的证据引用：回答「依据哪一版报告的哪个位置」 */
-  evidenceRef?: EvidenceRef;
   judgment?: "satisfied" | "partially_satisfied" | "not_satisfied" | "unable_to_judge" | "professional_judgment";
   /** model = 模型给出的判定；score_fallback = 模型未给、由分数兜底 */
   judgmentSource?: "model" | "score_fallback";
@@ -217,18 +215,32 @@ export interface ServerGrade {
   attentionLevel?: "clear" | "needs_attention" | "review_required";
 }
 
-/** 可定位的证据引用（与后端 buildEvidenceRef 一一对应） */
-export interface EvidenceRef {
+/**
+ * `EvidenceRefV1` —— 契约层（`src/contracts/evidence.js`）定义的证据引用。
+ *
+ * 注意这里**没有** `locator: string` 那种自定义形式：契约层统一用对象，
+ * 并按文档类型给不同字段（PDF/PPTX → page/slide；DOCX → headingPath；表格 → sheet/range）。
+ * 硬规则是「不猜位置」—— 拿不到就留 null，不用估算值填充。
+ */
+export interface EvidenceRefV1 {
+  /** 稳定 ID：定位相同的证据，id 相同 */
+  id: string;
   /** 文档版本：blobId（内容哈希）；无原件时为 null */
   documentVersionId: string | null;
-  /** 可解析的定位符，如 "page=2" 或 "page=2&block=5" */
-  locator: string;
-  /** 定位粒度：page = 只到页；paragraph = 已精确定位到段 */
-  kind: "page" | "paragraph";
-  /** 原文摘录 */
-  quote: string;
-  /** 关联的内嵌图资产 */
-  assetId?: string | null;
+  /** 关联的业务块，评分项为 `grade-<rubricId>` */
+  blockId: string | null;
+  kind: "text" | "figure" | "image" | "table" | "code" | "asset";
+  locator: {
+    page: number | null;
+    slide: number | null;
+    headingPath: string[] | null;
+    sheet?: string | null;
+    range?: string | null;
+    figure?: string | null;
+  };
+  /** 原文摘录（可核对的锚点） */
+  quote: string | null;
+  assetId: string | null;
 }
 export interface ServerReview {
   submissionId: string;
