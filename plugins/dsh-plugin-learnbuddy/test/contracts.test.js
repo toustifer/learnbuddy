@@ -388,3 +388,21 @@ test("契约·warnings - 课件没有答疑卡时说明「未读范围」", asyn
     await t.close();
   }
 });
+
+// ===========================================================================
+// 文件类端点的 ?token= 白名单（2026-09-23）
+// ===========================================================================
+
+test("文件端点·令牌白名单 - 给浏览器直连的文件端点都必须允许 ?token=", async () => {
+  // `<img src>` / `<iframe src>` 由浏览器发起，加不了 Authorization 头，只能靠 ?token=。
+  // **新增文件端点时忘了加白名单 → 401，而 `<img>`/`<iframe>` 只会显示裂图/空白**，
+  // 接口层测试却全绿。这条就是守它的（`/files/:id/preview` 就是这么漏过一次的）。
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../src/routes/api.js", import.meta.url), "utf-8");
+  const allow = src.match(/QUERY_TOKEN_ENDPOINT = \/(.+)\/;/);
+  assert.ok(allow, "应能找到 QUERY_TOKEN_ENDPOINT 的定义");
+  const pattern = new RegExp(allow[1]);
+  for (const ep of ["view", "download", "preview"]) {
+    assert.ok(pattern.test(`/api/learnbuddy/files/abc/${ep}`), `/files/:id/${ep} 必须在 ?token= 白名单里`);
+  }
+});

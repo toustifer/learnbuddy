@@ -261,7 +261,9 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
    * （`<img src>` / `<a href>`），无法附加自定义请求头。
    * 令牌本身仍是服务端签发并校验的，因此不等于「自报身份」。
    */
-  const QUERY_TOKEN_ENDPOINT = /^\/api\/learnbuddy\/files\/[^/]+\/(view|download)$/;
+  // 允许用 `?token=` 的文件类端点。**新增文件端点时必须同步加到这里** ——
+  // 漏了会 401，而 `<img>`/`<iframe>` 加不了请求头，前端只会看到一张裂图。
+  const QUERY_TOKEN_ENDPOINT = /^\/api\/learnbuddy\/files\/[^/]+\/(view|download|preview)$/;
 
   const readRawBody = async (req) => {
     return new Promise((resolve, reject) => {
