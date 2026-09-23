@@ -10,6 +10,8 @@ import {
   Upload,
   X,
   Info,
+  CheckCircle2,
+  AlertCircle,
 } from "lucide-react";
 import { useStore } from "../store-context";
 import { validateFile, visibleCourses, visibleMaterials } from "../domain";
@@ -26,7 +28,17 @@ import {
 } from "../ui";
 import type { Material } from "../types";
 
-export function UploadMaterial({ onClose, initialVisibility, scope }: { onClose: () => void; initialVisibility?: "course" | "private"; scope?: string }) {
+export function UploadMaterial({
+  onClose,
+  initialVisibility,
+  scope,
+  onUploaded,
+}: {
+  onClose: () => void;
+  initialVisibility?: "course" | "private";
+  scope?: string;
+  onUploaded?: (courseId: string, visibility: "course" | "private") => void;
+}) {
   const { user, courseId, update, notify, refreshMaterials } = useStore();
   const myCourses = visibleCourses(user!);
   const [target, setTarget] = useState(
@@ -39,39 +51,91 @@ export function UploadMaterial({ onClose, initialVisibility, scope }: { onClose:
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [drag, setDrag] = useState(false);
+  const [fileProgress, setFileProgress] = useState<
+    Record<string, { status: "pending" | "uploading" | "done" | "error"; progress: number }>
+  >({});
   const input = useRef<HTMLInputElement>(null);
+
   function select(incoming: FileList | File[]) {
     try {
       const next = Array.from(incoming);
       next.forEach(validateFile);
       setFiles(next);
+      setFileProgress({});
       setError("");
     } catch (e) {
       setError((e as Error).message);
     }
   }
+
   async function submit() {
     if (!files.length) return setError("请先选择文件。");
     if (!target) return setError("请先选择所属课程。");
     setSaving(true);
+    setError("");
+
+    // 初始化所有文件状态
+    const initialProg: Record<string, { status: "pending" | "uploading" | "done" | "error"; progress: number }> = {};
+    files.forEach((f) => {
+      initialProg[f.name] = { status: "pending", progress: 0 };
+    });
+    setFileProgress(initialProg);
+
     try {
       if (LIVE_MODE) {
         let count = 0;
         try {
           for (const file of files) {
-            await uploadMaterial(file, user!, target, visibility);
-            count++;
-            setFiles((remaining) => remaining.filter((f) => f !== file));
+            setFileProgress((prev) => ({
+              ...prev,
+              [file.name]: { status: "uploading", progress: 20 },
+            }));
+
+            // 模拟平滑上传环形进度递增
+            const timer = setInterval(() => {
+              setFileProgress((prev) => {
+                const cur = prev[file.name]?.progress || 20;
+                if (cur >= 88) return prev;
+                return {
+                  ...prev,
+                  [file.name]: { status: "uploading", progress: cur + 15 },
+                };
+              });
+            }, 180);
+
+            try {
+              await uploadMaterial(file, user!, target, visibility);
+              clearInterval(timer);
+              setFileProgress((prev) => ({
+                ...prev,
+                [file.name]: { status: "done", progress: 100 },
+              }));
+              count++;
+            } catch (uploadErr) {
+              clearInterval(timer);
+              setFileProgress((prev) => ({
+                ...prev,
+                [file.name]: { status: "error", progress: 100 },
+              }));
+              throw uploadErr;
+            }
           }
         } finally {
           await refreshMaterials();
         }
         notify(`已上传 ${count} 份资料，请查看各文件的解析状态。`);
-        onClose();
+        onUploaded?.(target, visibility);
+        setTimeout(() => {
+          onClose();
+        }, 500);
         return;
       }
       const next: Material[] = [];
       for (const file of files) {
+        setFileProgress((prev) => ({
+          ...prev,
+          [file.name]: { status: "uploading", progress: 50 },
+        }));
         const kind = validateFile(file);
         const id = createId();
         await saveBlob(id, file);
@@ -89,10 +153,17 @@ export function UploadMaterial({ onClose, initialVisibility, scope }: { onClose:
           knowledge: [],
           cards: [],
         });
+        setFileProgress((prev) => ({
+          ...prev,
+          [file.name]: { status: "done", progress: 100 },
+        }));
       }
       update((s) => ({ ...s, materials: [...next, ...s.materials] }));
       notify(`已保存 ${next.length} 份文件，真实解析待接入。`);
-      onClose();
+      onUploaded?.(target, visibility);
+      setTimeout(() => {
+        onClose();
+      }, 400);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -150,13 +221,47 @@ export function UploadMaterial({ onClose, initialVisibility, scope }: { onClose:
       </button>
       {files.length > 0 && (
         <div className="upload-list">
-          {files.map((f, i) => (
-            <div key={i}>
-              <FileIcon kind={f.name.split(".").pop()!.toUpperCase()} />
-              <span>{f.name}</span>
-              <small>{formatFileSize(f.size)}</small>
-            </div>
-          ))}
+          {files.map((f, i) => {
+            const prog = fileProgress[f.name];
+            return (
+              <div key={i} className="upload-item">
+                <FileIcon kind={f.name.split(".").pop()!.toUpperCase()} />
+                <span title={f.name}>{f.name}</span>
+                <small>{formatFileSize(f.size)}</small>
+                {prog && (
+                  <div className="upload-progress-wrapper" title={prog.status === "done" ? "上传完成" : prog.status === "error" ? "上传失败" : `上传中 ${prog.progress}%`}>
+                    {prog.status === "done" ? (
+                      <CheckCircle2 size={16} className="progress-done-icon" />
+                    ) : prog.status === "error" ? (
+                      <AlertCircle size={16} className="progress-error-icon" />
+                    ) : (
+                      <svg className="circular-progress" viewBox="0 0 24 24" width="18" height="18">
+                        <circle
+                          className="progress-bg"
+                          cx="12"
+                          cy="12"
+                          r="9"
+                          fill="none"
+                          strokeWidth="2.5"
+                        />
+                        <circle
+                          className="progress-bar"
+                          cx="12"
+                          cy="12"
+                          r="9"
+                          fill="none"
+                          strokeWidth="2.5"
+                          strokeDasharray={2 * Math.PI * 9}
+                          strokeDashoffset={2 * Math.PI * 9 * (1 - prog.progress / 100)}
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
       <p className="inline-note">
@@ -222,6 +327,20 @@ export function Library({ scope }: { scope: string }) {
       </div>
       <AnimatePresence initial={false}>{personalOpen && <motion.div id="personal-resources-list" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: .2 }} className="personal-content"><p>{teacher ? "备课笔记、参考文献，仅自己可见。" : "课外文档、阅读笔记，可交给助手一起阅读；仅自己可见。"}</p>{personal.length ? rows(personal) : <div className="personal-empty">{search ? "没有匹配的个人资料。" : "有需要时再添加，日常学习直接阅读上方课程资料即可。"}</div>}</motion.div>}</AnimatePresence>
     </section>
-    {upload && <UploadMaterial scope={scope} initialVisibility={upload} onClose={() => setUpload(null)} />}
+    {upload && (
+      <UploadMaterial
+        scope={scope}
+        initialVisibility={upload}
+        onClose={() => setUpload(null)}
+        onUploaded={(uploadedCourseId, uploadedVis) => {
+          if (uploadedVis === "private" || user!.role === "student") {
+            setPersonalOpen(true);
+          }
+          if (uploadedCourseId !== scope) {
+            go({ page: "course", id: uploadedCourseId });
+          }
+        }}
+      />
+    )}
   </section>;
 }
