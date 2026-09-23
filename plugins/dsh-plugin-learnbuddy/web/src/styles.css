@@ -3210,6 +3210,36 @@ figcaption {
   font-size: 9px;
   color: #bdcba8;
 }
+.upload-progress-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+.progress-done-icon {
+  color: #2e7d32;
+  animation: scaleIn 0.25s ease-out;
+}
+.progress-error-icon {
+  color: #d32f2f;
+}
+.circular-progress {
+  transform: rotate(-90deg);
+}
+.circular-progress .progress-bg {
+  stroke: #e6ede0;
+}
+.circular-progress .progress-bar {
+  stroke: #2e7d32;
+  transition: stroke-dashoffset 0.2s ease-in-out;
+}
+@keyframes scaleIn {
+  0% { transform: scale(0.6); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
 .sample-option {
   display: flex;
   align-items: center;
