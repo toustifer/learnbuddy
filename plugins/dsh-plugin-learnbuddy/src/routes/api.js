@@ -11,6 +11,7 @@
  */
 
 import fs from "node:fs";
+import { ensurePdfPreview, isConvertible, isInlinePreviewable } from "../services/doc-convert.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { MaterialParserService } from "../services/material-parser.js";
@@ -22,6 +23,16 @@ import { AutoGraderEngine } from "../services/grader.js";
 import { MultimodalLLMClient } from "../services/llm.js";
 import { DatabaseStore } from "../db/store.js";
 import { StorageService, defaultStorage, getMimeType } from "../services/storage.js";
+import { verifyPassword, readBearerToken, readQueryToken, resolveActorFromRequest } from "../services/auth.js";
+import { ERROR_CODES, classifyError, withEnvelope } from "../contracts/envelope.js";
+import { isGradeVisible } from "../contracts/projection.js";
+import {
+  deriveDocumentVersionId,
+  evidenceRefsFromMaterialContext,
+  withSubmissionEvidenceRefs,
+  withSubmissionsEvidenceRefs,
+  collectFromSubmissions
+} from "../contracts/evidence.js";
 import { registerTeachingRoutes } from "./teaching.js";
 import { registerSpeechRoutes } from "./speech.js";
 
@@ -209,27 +220,50 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
   };
 
   /**
-   * task-17：课程 / 作业 / 提交域的统一身份校验。
+   * 身份绑定：把请求换成一个可信的 `Actor`。
    *
-   * 为什么强制 userId：
-   *   既有 `GET /materials` 在不带 `userId` 时会返回**全库**课件（含教师 `private` 资料），
-   *   是已确认的越权泄漏（见 `docs/API.md` §4.3）。新补的 5 个端点从第一天起就把
-   *   `userId` 作为必填身份，缺失一律 400，杜绝同款漏洞。
+   * 只认 `Authorization: Bearer <token>`（文件预览 / 下载这两个由浏览器直连的场景，
+   * 另允许 `?token=`，见 `readQueryToken` 的说明）。
    *
-   * @param {string | null | undefined} rawUserId
+   * **不再接受任何自报身份。** 原来的 `requireUser(url.searchParams.get("userId"))`
+   * 等于让调用方自己声明自己是谁——实测中任何人只要自报一个教师账号，
+   * 不需要任何凭据就能拿到全班学生的分数与评语。
+   *
+   * @param {import("node:http").IncomingMessage} req
+   * @param {{fallbackToken?: string}} [options]
    * @returns {{ok: true, user: object} | {ok: false, status: number, error: string}}
    */
-  const requireUser = (rawUserId) => {
-    const userId = typeof rawUserId === "string" ? rawUserId.trim() : "";
-    if (!userId) {
-      return { ok: false, status: 400, error: "缺少必要参数: userId" };
+  /**
+   * 给评分类响应补上契约层的证据引用。
+   *
+   * 为什么需要：评分**最初就是在这些接口里产生的**，契约要求「凡结论必挂证据引用」。
+   * 此前只有 `/submissions*` 做了派生，评分接口直接透传 ⇒ 刚评完分的那一次响应里没有引用，
+   * 前端要么拿不到、要么得再请求一次。这里统一补上，四个评分端点共用一处。
+   */
+  const withEvidenceRefsOnResult = (result) => {
+    if (!result || typeof result !== "object") return result;
+    if (result.submission) {
+      const submission = withSubmissionEvidenceRefs(result.submission);
+      return { ...result, submission, evidenceRefs: collectFromSubmissions([submission]) };
     }
-    const user = store.getUser(userId);
-    if (!user) {
-      return { ok: false, status: 404, error: `用户不存在: ${userId}` };
+    if (Array.isArray(result.submissions)) {
+      const submissions = withSubmissionsEvidenceRefs(result.submissions);
+      return { ...result, submissions, evidenceRefs: collectFromSubmissions(submissions) };
     }
-    return { ok: true, user };
+    return result;
   };
+
+  const requireActor = (req, options = {}) =>
+    resolveActorFromRequest(store, req, { queryToken: options.fallbackToken || "" });
+
+  /**
+   * 允许用 `?token=` 传令牌的端点：图片预览与文件下载由浏览器直接发起
+   * （`<img src>` / `<a href>`），无法附加自定义请求头。
+   * 令牌本身仍是服务端签发并校验的，因此不等于「自报身份」。
+   */
+  // 允许用 `?token=` 的文件类端点。**新增文件端点时必须同步加到这里** ——
+  // 漏了会 401，而 `<img>`/`<iframe>` 加不了请求头，前端只会看到一张裂图。
+  const QUERY_TOKEN_ENDPOINT = /^\/api\/learnbuddy\/files\/[^/]+\/(view|download|preview)$/;
 
   const readRawBody = async (req) => {
     return new Promise((resolve, reject) => {
@@ -250,14 +284,41 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     }
   };
 
+  /**
+   * 统一响应出口（契约层「访问契约」在这里**定义一次**）。
+   *
+   * 为什么放在这个函数里：所有端点、`teaching.js`、`speech` 共用同一个出口，
+   * 因此**新增端点自动合规**——不需要每个端点自己记得加信封或错误码。
+   *
+   * 做两件事：
+   *   1. 成功：补 `schemaVersion` / `asOf` / `warnings` / `evidenceRefs` / `nextCursor` / `data`
+   *   2. 失败：按既有文案归类出 `code`（调用方已显式给出 `code` 时以调用方为准），
+   *      同时**保留原有 `error` 字段**，不打断现有客户端
+   */
   const sendJson = (res, statusCode, data) => {
+    let payload = data;
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      if (data.ok === false) {
+        const code = typeof data.code === "string" ? data.code : classifyError(data.error);
+        const spec = ERROR_CODES[code];
+        const merged = {
+          ...data,
+          code,
+          error: data.error || (spec && spec.defaultMessage) || "请求失败"
+        };
+        payload = withEnvelope(merged, { data: null });
+      } else {
+        payload = withEnvelope(data);
+      }
+    }
+
     res.writeHead(statusCode, {
       "Content-Type": "application/json; charset=utf-8",
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization, X-File-Name"
     });
-    res.end(JSON.stringify(data));
+    res.end(JSON.stringify(payload));
   };
 
   registerTeachingRoutes(server, { store, readJson: parseJsonBody, sendJson });
@@ -280,38 +341,70 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     // ==========================================
     // 1. 登录 API (支持 user/123 测试凭据与 SQLite 用户体系)
     // ==========================================
+    // ==========================================
+    // 1. 认证域（登录 / 当前身份 / 退出）
+    //
+    // 身份绑定的第一性问题：入口负责认证，之后只传 `Actor`。
+    // 令牌由服务端随机签发并落库，调用方无法用任何入参声明自己是谁。
+    // ==========================================
     if (req.method === "POST" && pathname === "/api/learnbuddy/auth/login") {
       const body = await parseJsonBody(req);
       const { username, password } = body;
 
-      // 优先从 SQLite 数据库查验用户
-      const dbUser = store.getUserByUsername ? store.getUserByUsername(username) : null;
-      if (dbUser) {
-        return sendJson(res, 200, {
-          ok: true,
-          token: `token-${dbUser.id}-${Date.now()}`,
-          user: { ...dbUser, courses: store.getUserCourses(dbUser.id) }
+      const credential =
+        typeof username === "string" && store.getCredentialByUsername
+          ? store.getCredentialByUsername(username.trim())
+          : null;
+
+      // 「用户不存在」与「密码错误」返回同一种结果，避免被用来枚举系统里有哪些账号
+      if (!credential || !verifyPassword(password, credential.passwordHash)) {
+        return sendJson(res, 401, {
+          ok: false,
+          error: "用户名或密码不正确。演示账号密码为 123。"
         });
       }
 
-      // 测试账号兼容
-      if ((username === "user" && password === "123") || username === "admin") {
-        return sendJson(res, 200, {
-          ok: true,
-          token: "mock-token-learnbuddy-user-123",
-          user: {
-            id: "user-demo",
-            username: username || "user",
-            name: "学习者/助教测试账户",
-            role: "teacher"
-          }
-        });
-      }
-
-      return sendJson(res, 401, {
-        ok: false,
-        error: "用户名或密码错误，可使用默认测试凭据 user / 123 或教师账户 teacher.chen"
+      const session = store.createSession(credential.user.id);
+      return sendJson(res, 200, {
+        ok: true,
+        token: session.token,
+        expiresAt: session.expiresAt,
+        user: { ...credential.user, courses: store.getUserCourses(credential.user.id) }
       });
+    }
+
+    // 当前登录身份：前端刷新后用令牌换回用户对象；无令牌即 401
+    if (req.method === "GET" && pathname === "/api/learnbuddy/auth/me") {
+      const auth = requireActor(req);
+      if (!auth.ok) {
+        return sendJson(res, auth.status, { ok: false, error: auth.error });
+      }
+      return sendJson(res, 200, {
+        ok: true,
+        user: { ...auth.user, courses: store.getUserCourses(auth.user.id) }
+      });
+    }
+
+    // 退出登录：作废令牌。无令牌时也返回成功（幂等），避免前端退出流程被卡住
+    if (req.method === "POST" && pathname === "/api/learnbuddy/auth/logout") {
+      const token = readBearerToken(req);
+      if (token) store.deleteSession(token);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // ---- 统一门槛：除上面三个认证端点外，一律要求有效令牌 ----
+    //
+    // 放在路由分发之前，是为了避免「新加一个端点忘了校验」——
+    // 默认拒绝、显式放行，比逐个端点加校验更不容易漏。
+    if (pathname.startsWith("/api/learnbuddy")) {
+      const gate = requireActor(req, {
+        fallbackToken: QUERY_TOKEN_ENDPOINT.test(pathname) ? readQueryToken(url) : ""
+      });
+      if (!gate.ok) {
+        return sendJson(res, gate.status, { ok: false, error: gate.error });
+      }
+      // 后续各端点直接复用这次解析结果，不再重复查库
+      req.actor = gate.user;
     }
 
     // ==========================================
@@ -322,24 +415,30 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     //    解析错误信息随 material 一起过滤，不构成越权泄露渠道。
     // ==========================================
     if (req.method === "GET" && pathname === "/api/learnbuddy/materials") {
-      const userId = url.searchParams.get("userId");
-      const courseId = url.searchParams.get("courseId");
+      // 身份绑定：可见范围一律由登录身份决定，不接受调用方声明。
+      // 原先「不带 userId 就返回全库」「只给 courseId 就返回该课全部」两条兜底分支已删除——
+      // 那正是已确认的越权泄漏：任何人可借此拉到教师 private 资料。
+      const userId = req.actor.id;
+      const courseId = url.searchParams.get("courseId") || undefined;
+      const materials = store.getMaterials(userId, courseId);
 
-      let materials = [];
-      if (userId) {
-        materials = store.getMaterials(userId, courseId);
-      } else if (courseId) {
-        // 如果没有提供 userId，但提供了 courseId，以默认教师视角或全部可见课件拉取
-        const all = store.listMaterials ? store.listMaterials() : [];
-        materials = all.filter((m) => m.courseId === courseId);
-      } else {
-        // 全量课件
-        materials = store.listMaterials ? store.listMaterials() : [];
-      }
+      // 「未读范围」显式暴露：把还没解析成功的课件点名，避免调用方
+      // 以为"列表拿到了"就等于"内容都读得到"。
+      const unreadable = materials.filter(
+        (m) => m.parseStatus === "failed" || m.parseStatus === "pending"
+      );
+      const materialWarnings = unreadable.length
+        ? [
+            `有 ${unreadable.length} 份课件尚未解析成功，不在本次可读范围内：` +
+              unreadable.slice(0, 3).map((m) => m.title).join("、") +
+              (unreadable.length > 3 ? " 等" : "")
+          ]
+        : [];
 
       return sendJson(res, 200, {
         ok: true,
-        materials
+        materials,
+        warnings: materialWarnings
       });
     }
 
@@ -349,7 +448,8 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     const contextMatch = pathname.match(/^\/api\/learnbuddy\/materials\/([^/]+)\/context$/);
     if (req.method === "GET" && contextMatch) {
       const materialId = decodeURIComponent(contextMatch[1]);
-      const userId = url.searchParams.get("userId") || undefined;
+      // 身份绑定：上下文按登录身份构建，不再从查询参数取 userId
+      const userId = req.actor.id;
       const context = materialContextService.buildMaterialContext(materialId, { userId, store });
       if (!context) {
         return sendJson(res, 404, {
@@ -357,9 +457,23 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
           error: "未找到指定课件或当前用户无权访问"
         });
       }
+      // 溯源契约：上下文里的段落与图表要能指回原文。
+      // 文档版本取原件的内容哈希（内容寻址 ⇒ 原件不可变，旧引用不会指错）
+      const contextMaterial = store.getMaterialById(materialId, userId);
+      const documentVersionId = deriveDocumentVersionId(contextMaterial);
+      const evidenceRefs = evidenceRefsFromMaterialContext(context, documentVersionId);
+      // 缺版本时**不猜**：留空并说明原因，而不是编一个版本号让引用看起来成立
+      const traceWarnings = documentVersionId
+        ? []
+        : [
+            "该课件没有可追溯的原件版本（缺少内容哈希），本次不产出证据引用 —— " +
+              "溯源要求指向确定版本，没有版本时留空而不猜测。"
+          ];
       return sendJson(res, 200, {
         ok: true,
-        context
+        context,
+        evidenceRefs,
+        warnings: traceWarnings
       });
     }
 
@@ -526,6 +640,85 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     }
 
     // ==========================================
+    // 4.1 可用于**内嵌渲染**的预览 (/files/:id/preview)
+    //
+    // 与 /view 的区别：
+    //   /view     永远给**原件**（保真、可下载）
+    //   /preview  给**浏览器能直接渲染的东西** —— PDF/图片原样，
+    //             Word 之类先转成 PDF（按 blobId 缓存，同一个文件只转一次）
+    //
+    // 为什么不让 /view 自己转：那样「下载原件」会拿到一份不是原件的 PDF，口径就乱了。
+    // ==========================================
+    const previewMatch = pathname.match(/^\/api\/learnbuddy\/files\/([^/]+)\/preview$/);
+    if (req.method === "GET" && previewMatch) {
+      const fileId = decodeURIComponent(previewMatch[1]);
+      const filePath = storage.getFilePath(fileId);
+      if (!filePath) {
+        return sendJson(res, 404, { ok: false, error: "文件不存在或已被删除" });
+      }
+
+      const meta = storage.getFileMetadata ? storage.getFileMetadata(fileId) : null;
+      let servePath = filePath;
+      let serveType = (meta && meta.mimeType) || getMimeType(filePath);
+      let converted = false;
+
+      if (!isInlinePreviewable(fileId)) {
+        if (!isConvertible(fileId)) {
+          return sendJson(res, 415, {
+            ok: false,
+            error: "这个格式既不能内嵌渲染，也无法转换成可预览的 PDF"
+          });
+        }
+        const conv = await ensurePdfPreview({
+          blobId: fileId,
+          sourcePath: filePath,
+          uploadDir: storage.uploadDir
+        });
+        if (!conv.ok) {
+          // 转换失败就如实说，不糊一个空白框
+          return sendJson(res, 502, {
+            ok: false,
+            error: `无法生成内嵌预览：${conv.error || "转换失败"}。可改用「打开原件」查看。`
+          });
+        }
+        servePath = conv.pdfPath;
+        serveType = "application/pdf";
+        converted = true;
+      }
+
+      try {
+        const stat = fs.statSync(servePath);
+        res.writeHead(200, {
+          "Content-Type": serveType,
+          "Content-Disposition": "inline",
+          "Content-Length": stat.size,
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": "public, max-age=86400",
+          // 让前端知道这份预览是不是转换来的（转换产物页数才是真实页数）
+          "X-LearnBuddy-Preview": converted ? "converted" : "original"
+        });
+
+        await new Promise((resolve, reject) => {
+          const stream = fs.createReadStream(servePath);
+          stream.on("error", (err) => {
+            if (!res.headersSent) {
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+            resolve();
+          });
+          res.on("finish", resolve);
+          res.on("close", resolve);
+          res.on("error", reject);
+          stream.pipe(res);
+        });
+        return;
+      } catch (err) {
+        return sendJson(res, 500, { ok: false, error: err.message });
+      }
+    }
+
+    // ==========================================
     // 5. 静态原件附件下载路由 (/files/:id/download)
     // ==========================================
     const downloadMatch = pathname.match(/^\/api\/learnbuddy\/files\/([^/]+)\/download$/);
@@ -622,7 +815,15 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         });
       }
 
-      return sendJson(res, 200, sessionContext);
+      // 契约层要求：降级与「未读范围」必须显式暴露，不能让人以为拿到的是全量
+      const sessionWarnings = [];
+      if (sessionContext.truncated) {
+        sessionWarnings.push("课件上下文因长度上限被截断，本次未包含全文。");
+      }
+      if (Number(sessionContext.cardsCount) === 0) {
+        sessionWarnings.push("本课件暂无已发布的教师答疑卡，回答将主要依据课件原文。");
+      }
+      return sendJson(res, 200, { ...sessionContext, warnings: sessionWarnings });
     }
 
     // 2) POST /api/learnbuddy/dsh/quote
@@ -753,15 +954,31 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
             answer: buildQaFallbackAnswer(question, matContext),
             contextInjected: Boolean(matContext || matchedCards.length > 0),
             fallback: true,
-            truncated: Boolean(resp.truncated)
+            truncated: Boolean(resp.truncated),
+            // 契约层要求：降级必须**显式暴露**，不能只藏在文案里
+            warnings: [
+              resp.truncated
+                ? "模型输出被截断，本次回答已降级为基于课件骨架的兜底内容，请以教师复核为准。"
+                : "模型未返回有效内容，本次回答已降级为基于课件骨架的兜底内容，请以教师复核为准。"
+            ]
           });
+        }
+
+        const contextInjected = Boolean(matContext || matchedCards.length > 0);
+        const warnings = [];
+        if (!contextInjected) {
+          //「未读范围」要显式暴露：没有课件上下文，回答就不含这门课的具体内容
+          warnings.push(
+            "本次回答未注入课件上下文（未指定 materialId，或该课件对当前身份不可读），回答可能不含本课具体内容。"
+          );
         }
 
         return sendJson(res, 200, {
           ok: true,
           source: "agent_llm",
           answer,
-          contextInjected: Boolean(matContext || matchedCards.length > 0)
+          contextInjected,
+          warnings
         });
       } catch {
         // 模型请求失败兜底提示（严格遵循图表与答疑规范）
@@ -769,7 +986,10 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
           ok: true,
           source: "agent_llm",
           answer: buildQaFallbackAnswer(question, matContext),
-          fallback: true
+          fallback: true,
+          warnings: [
+            "模型服务暂不可用，本次回答已降级为兜底内容；这不是基于本次提问的模型回答，请稍后重试。"
+          ]
         });
       }
     }
@@ -807,7 +1027,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
 
       try {
         const result = await autoGraderPipeline.gradeSubmission(submissionId, gradeOptions);
-        return sendJson(res, 200, result);
+        return sendJson(res, 200, withEvidenceRefsOnResult(result));
       } catch (err) {
         return sendJson(res, 400, {
           ok: false,
@@ -835,7 +1055,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
           concurrency: concurrency || batchOptions.concurrency || 2,
           ...batchOptions
         });
-        return sendJson(res, 200, result);
+        return sendJson(res, 200, withEvidenceRefsOnResult(result));
       } catch (err) {
         return sendJson(res, 400, {
           ok: false,
@@ -860,7 +1080,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
 
       try {
         const result = await autoGraderPipeline.retryGrading(submissionId, retryOptions);
-        return sendJson(res, 200, result);
+        return sendJson(res, 200, withEvidenceRefsOnResult(result));
       } catch (err) {
         return sendJson(res, 400, {
           ok: false,
@@ -875,8 +1095,9 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     // ==========================================
     if (req.method === "POST" && pathname === "/api/learnbuddy/grader/review-publish") {
       const body = await parseJsonBody(req);
-      const { submissionId, grades, summary, strictRange, annotations } = body;
-      const teacherId = body.teacherId || body.userId || body.reviewerId;
+        const { submissionId, grades, summary, strictRange, annotations } = body;
+        // 身份绑定：复核人取自登录令牌，不再接受 body 里的 teacherId/reviewerId
+        const teacherId = req.actor.id;
 
       if (!submissionId) {
         return sendJson(res, 400, { ok: false, error: "缺少必要参数: submissionId" });
@@ -896,7 +1117,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
           strictRange: strictRange === true,
           annotations: Array.isArray(annotations) ? annotations : undefined
         });
-        return sendJson(res, 200, result);
+        return sendJson(res, 200, withEvidenceRefsOnResult(result));
       } catch (err) {
         return sendJson(res, resolveErrorStatus(err.message), {
           ok: false,
@@ -910,27 +1131,57 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     //     GET  /api/learnbuddy/submissions/:id/annotations
     //     POST /api/learnbuddy/submissions/:id/annotations
     // ==========================================
+    // 身份绑定 + D2 补齐（2026-09-21 合并 main 时修）：
+    // 原先两个方法都调 `store.getSubmission(id)`（**不传 userId**），
+    // 而 store 在不传身份时不做任何权限判断 ⇒ 任何登录用户都能读写任意提交的批注。
+    // 另外批注的 comment 属于 D2 的「详细评语与依据」，教师确认前不得给学生看。
     const submissionAnnoMatch = pathname.match(/^\/api\/learnbuddy\/submissions\/([^/]+)\/annotations$/);
     if (submissionAnnoMatch) {
       const submissionId = decodeURIComponent(submissionAnnoMatch[1]);
+
+      const annoAuth = requireActor(req);
+      if (!annoAuth.ok) {
+        return sendJson(res, annoAuth.status, { ok: false, error: annoAuth.error });
+      }
+
+      // 权限探针：带身份读取，store 会校验归属与课程关系，无权时返回 null。
+      // 无权与不存在**都返回 404**，避免用状态码差异探测某份提交是否存在。
+      const annoAllowed = store.getSubmission(submissionId, annoAuth.user.id);
+      if (!annoAllowed) {
+        return sendJson(res, 404, { ok: false, error: "提交记录不存在" });
+      }
+
       if (req.method === "GET") {
-        const sub = store.getSubmission(submissionId);
-        if (!sub) {
-          return sendJson(res, 404, { ok: false, error: "提交记录不存在" });
-        }
+        // D2 用的是**投影契约里同一个可见性判据**（isGradeVisible），
+        // 批注与 grades/summary 走同一条规则，不再各写一套。
+        const rawSubmission = store.getSubmission(submissionId);
+        const annotations = isGradeVisible(rawSubmission, annoAuth.user)
+          ? (rawSubmission.annotations || [])
+          : [];
         return sendJson(res, 200, {
           ok: true,
           submissionId,
-          annotations: sub.annotations || []
+          annotations
         });
       }
+
       if (req.method === "POST") {
+        // 只有教师可以批注报告
+        if (annoAuth.user.role !== "teacher") {
+          return sendJson(res, 403, {
+            ok: false,
+            error: "权限不足：只有教师可以批注报告"
+          });
+        }
+
         const body = await parseJsonBody(req);
-        const sub = store.getSubmission(submissionId);
-        if (!sub) {
+        const rawSubmission = store.getSubmission(submissionId);
+        if (!rawSubmission) {
           return sendJson(res, 404, { ok: false, error: "提交记录不存在" });
         }
-        const existingList = Array.isArray(sub.annotations) ? [...sub.annotations] : [];
+        const existingList = Array.isArray(rawSubmission.annotations)
+          ? [...rawSubmission.annotations]
+          : [];
         const newAnnotation = {
           id: body.id || `anno-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           page: typeof body.page === "number" ? body.page : 1,
@@ -962,7 +1213,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         const result = await feedbackAnalyticsService.computeAssignmentAnalytics(assignmentId, {
           skipLLM
         });
-        return sendJson(res, 200, result);
+        return sendJson(res, 200, withEvidenceRefsOnResult(result));
       } catch (err) {
         return sendJson(res, resolveErrorStatus(err.message), {
           ok: false,
@@ -984,7 +1235,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         const result = await feedbackAnalyticsService.computeCourseFeedbackOverview(courseId, {
           skipLLM
         });
-        return sendJson(res, 200, result);
+        return sendJson(res, 200, withEvidenceRefsOnResult(result));
       } catch (err) {
         return sendJson(res, resolveErrorStatus(err.message), {
           ok: false,
@@ -1010,7 +1261,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
 
     // 9.1 课程列表：学生 = 已选课程，教师 = 所授课程
     if (req.method === "GET" && pathname === "/api/learnbuddy/courses") {
-      const auth = requireUser(url.searchParams.get("userId"));
+      const auth = requireActor(req);
       if (!auth.ok) {
         return sendJson(res, auth.status, { ok: false, error: auth.error });
       }
@@ -1029,7 +1280,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     //     courseId 可选；传入时先做「课程存在 + 有访问权」判定，
     //     避免跨课程查询静默返回空数组（前端无法区分「无权限」与「确实没作业」）。
     if (req.method === "GET" && pathname === "/api/learnbuddy/assignments") {
-      const auth = requireUser(url.searchParams.get("userId"));
+      const auth = requireActor(req);
       if (!auth.ok) {
         return sendJson(res, auth.status, { ok: false, error: auth.error });
       }
@@ -1063,7 +1314,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     //     grades / summary / failure 被强制置空。
     //     这是「未发布成绩不泄漏给学生」这条安全红线在 HTTP 层的唯一生效点。
     if (req.method === "GET" && pathname === "/api/learnbuddy/submissions") {
-      const auth = requireUser(url.searchParams.get("userId"));
+      const auth = requireActor(req);
       if (!auth.ok) {
         return sendJson(res, auth.status, { ok: false, error: auth.error });
       }
@@ -1084,7 +1335,10 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         });
       }
 
-      const submissions = store.getSubmissions(auth.user.id, assignmentId);
+      // 溯源契约：建议分要能指回报告原文（版本取这份提交的内容哈希）
+      const submissions = withSubmissionsEvidenceRefs(
+        store.getSubmissions(auth.user.id, assignmentId)
+      );
       return sendJson(res, 200, {
         ok: true,
         userId: auth.user.id,
@@ -1092,7 +1346,8 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         assignmentId,
         courseId: assignment.courseId,
         count: submissions.length,
-        submissions
+        submissions,
+        evidenceRefs: collectFromSubmissions(submissions)
       });
     }
 
@@ -1101,7 +1356,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
     //     记录确实不存在 → 404；存在但无权访问 → 403。
     const submissionDetailMatch = pathname.match(/^\/api\/learnbuddy\/submissions\/([^/]+)$/);
     if (req.method === "GET" && submissionDetailMatch) {
-      const auth = requireUser(url.searchParams.get("userId"));
+      const auth = requireActor(req);
       if (!auth.ok) {
         return sendJson(res, auth.status, { ok: false, error: auth.error });
       }
@@ -1121,7 +1376,13 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         });
       }
 
-      return sendJson(res, 200, { ok: true, submission });
+      // 溯源契约：建议分要能指回报告原文
+      const enrichedSubmission = withSubmissionEvidenceRefs(submission);
+      return sendJson(res, 200, {
+        ok: true,
+        submission: enrichedSubmission,
+        evidenceRefs: collectFromSubmissions([enrichedSubmission])
+      });
     }
 
     // 9.5 创建提交（学生交报告）
@@ -1162,13 +1423,12 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
         }
       }
 
-      const actorRaw = body.studentId || body.userId;
-      const auth = requireUser(actorRaw);
+      // 身份绑定：提交人取自登录令牌，不再接受 body 里的 studentId/userId
+      const auth = requireActor(req);
       if (!auth.ok) {
         return sendJson(res, auth.status, {
           ok: false,
-          // 该端点身份字段名为 studentId（兼容 userId 别名），错误文案对前端更友好
-          error: auth.status === 400 ? "缺少必要参数: studentId" : auth.error
+          error: auth.error
         });
       }
 

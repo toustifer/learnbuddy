@@ -8,7 +8,7 @@ import {
 import { parseRoute, routeHash, courseForRoute } from "./navigation";
 import { Context } from "./store-context";
 import { users, freshState, fixtureGrades } from "./seed";
-import { LIVE_MODE, listMaterials, loginAccount, request } from "./api";
+import { LIVE_MODE, listMaterials, loginAccount, logoutAccount, request, restoreSession, setUnauthorizedHandler } from "./api";
 import { authenticate, assertTeacher, visibleCourses } from "./domain";
 import { readState, writeState, clearBlobs } from "./storage";
 import type { DemoState, Route, User, ServerReview, AcademicWorkspace } from "./types";
@@ -105,6 +105,48 @@ export function Provider({ children }: { children: ReactNode }) {
       materialsRequest.current?.abort();
     };
   }, [refreshMaterials]);
+
+  /**
+   * 页面刷新后恢复登录态。
+   *
+   * 服务端已改为真鉴权，令牌存在 localStorage 里，刷新后必须用 /auth/me 换回用户对象，
+   * 否则会退化成「看着没登录、其实是令牌还在」或者反过来「看着已登录、数据全 401」。
+   */
+  useEffect(() => {
+    if (!LIVE_MODE) return;
+    let active = true;
+    void (async () => {
+      const restored = await restoreSession();
+      if (!active || !restored) return;
+      userRef.current = restored;
+      setUser(restored);
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  /**
+   * 令牌失效时统一回登录页。
+   *
+   * api.ts 在收到 401 时会清掉本地令牌并调用这里；不做这一步的话，
+   * 用户会停在「界面显示已登录、所有数据都是空」的状态里，无从判断发生了什么。
+   */
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      if (!userRef.current) return;
+      epoch.current++;
+      materialsRequest.current?.abort();
+      academicRequest.current?.abort();
+      setAcademic(null);
+      setAcademicError("");
+      userRef.current = null;
+      setUser(null);
+      setCourseId("all");
+      setNotice({ message: "登录已失效，请重新登录。", error: true });
+    });
+    return () => setUnauthorizedHandler(null);
+  }, []);
   const [route, setRoute] = useState<Route>(() => parseRoute(location.hash));
   const [courseId, setCourseId] = useState("all");
   const [busy, setBusy] = useState<Record<string, boolean>>({});
@@ -199,6 +241,8 @@ export function Provider({ children }: { children: ReactNode }) {
       };
       stateRef.current = clean;
       setState(clean);
+      // 作废服务端会话并清本地令牌（失败也不阻塞本地退出）
+      void logoutAccount();
     }
     userRef.current = null;
     setReviewResults({});

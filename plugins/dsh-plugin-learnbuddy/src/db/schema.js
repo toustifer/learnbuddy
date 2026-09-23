@@ -2,6 +2,16 @@
  * LearnBuddy SQLite Database Schema and Seed Data
  * Compatible with Node 22 (node:sqlite DatabaseSync)
  */
+import { hashPassword } from "../services/auth.js";
+
+/**
+ * 演示账号的默认密码。
+ *
+ * 前端登录页与演示账号按钮本来就按 `123` 提交（见 `web/src/App.tsx`），
+ * 之前后端**没有校验密码**，所以这个约定一直没被真正执行过。
+ * 现在后端开始真实校验，种子数据就把这个约定落实成入库的哈希。
+ */
+export const DEMO_PASSWORD = "123";
 
 /**
  * task-15：materials 表的解析错误持久化列。
@@ -17,14 +27,38 @@ export const MATERIAL_PARSE_ERROR_COLUMNS = [
   { name: "parse_error", ddl: "parse_error TEXT" }
 ];
 
+/**
+ * 身份绑定：users 表的凭据列。
+ *
+ * 同样必须走迁移而不是只改建表语句——线上库里已有真实用户记录，
+ * 只改 `CREATE TABLE IF NOT EXISTS` 不会给已存在的表补列。
+ *
+ * 为什么默认空串而不是 NULL：老库里的用户补列后是「无密码」状态，
+ * 空串让 `verifyPassword()` 明确判否，不会因为 null 的宽松判断而放行。
+ */
+export const USER_AUTH_COLUMNS = [
+  { name: "password_hash", ddl: "password_hash TEXT NOT NULL DEFAULT ''" }
+];
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   username TEXT UNIQUE NOT NULL,
   name TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('teacher', 'student')),
-  initials TEXT
+  initials TEXT,
+  password_hash TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions (expires_at);
 
 CREATE TABLE IF NOT EXISTS courses (
   id TEXT PRIMARY KEY,
@@ -94,6 +128,7 @@ CREATE TABLE IF NOT EXISTS submissions (
   history TEXT DEFAULT '[]',
   failure TEXT,
   annotations TEXT DEFAULT '[]',
+  parsed_content TEXT,
   FOREIGN KEY (assignment_id) REFERENCES assignments(id),
   FOREIGN KEY (student_id) REFERENCES users(id)
 );
@@ -433,6 +468,23 @@ export const DEFAULT_SUBMISSIONS = [
     history: []
   },
   {
+    // 带真实原件的演示提交：用于验证真实解析链路（阅读器渲染、证据定位、内嵌图片）。
+    // 其余提交走 sampleKey 样例，两类数据并存便于对比。
+    // 选 (lab-db × s-xu) 是因为该组合在种子数据里空闲 —— 不挤占任何现有作业的
+    // 提交数量（lab-os / lab-tcp 的条数都被权限红线测试断言着，动不得）。
+    // 原件由 `node scripts/make-demo-report.mjs` 生成（内容固定 ⇒ blobId 稳定）。
+    id: "sub-xu-db",
+    assignmentId: "lab-db",
+    studentId: "s-xu",
+    fileName: "索引实验报告_许然.docx",
+    submittedAt: "2026-09-11 14:20",
+    status: "submitted",
+    blobId: "e38a62ddd6e08aaa825e3dbb1a125f8ea8d35c7e4973fe6e76209604b05eb6ed.docx",
+    grades: [],
+    summary: "",
+    history: []
+  },
+  {
     id: "sub-zhou-db",
     assignmentId: "lab-db",
     studentId: "s-zhou",
@@ -496,6 +548,73 @@ export function migrateMaterialsParseErrorColumns(db) {
 }
 
 /**
+ * 身份绑定：给老库的 users 表补凭据列（幂等）。
+ *
+ * @param {import('node:sqlite').DatabaseSync} db
+ */
+export function migrateUserAuthColumns(db) {
+  const table = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'")
+    .get();
+  if (!table) {
+    return { migrated: false, added: [], existing: [] };
+  }
+
+  const existing = db
+    .prepare("PRAGMA table_info(users)")
+    .all()
+    .map((row) => row.name);
+
+  const added = [];
+  for (const column of USER_AUTH_COLUMNS) {
+    if (existing.includes(column.name)) continue;
+    try {
+      db.exec(`ALTER TABLE users ADD COLUMN ${column.ddl}`);
+    } catch (err) {
+      // 并发启动时后到者可能撞上 "duplicate column name"，等价于迁移已完成
+      if (!/duplicate column name/i.test(err.message || "")) throw err;
+    }
+    added.push(column.name);
+  }
+
+  return { migrated: added.length > 0, added, existing };
+}
+
+/**
+ * 老库增量迁移：给 submissions 补 parsed_content 列。
+ *
+ * 为什么必须落库：`parsedContent` 原先只随「评阅接口」的响应返回一次，
+ * 刷新页面即丢失；模型不可用（评分失败）时更是完全看不到报告内容。
+ * 解析产物是教师复核的依据，必须持久化，而不是一次性的响应字段。
+ *
+ * 幂等：已有该列直接跳过；并发启动撞上 duplicate column 也视为完成。
+ */
+export function migrateSubmissionParsedContentColumn(db) {
+  const table = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'submissions'")
+    .get();
+  if (!table) {
+    return { migrated: false, added: [], existing: [] };
+  }
+
+  const existing = db
+    .prepare("PRAGMA table_info(submissions)")
+    .all()
+    .map((row) => row.name);
+
+  if (existing.includes("parsed_content")) {
+    return { migrated: false, added: [], existing };
+  }
+
+  try {
+    db.exec("ALTER TABLE submissions ADD COLUMN parsed_content TEXT");
+  } catch (err) {
+    if (!/duplicate column name/i.test(err.message || "")) throw err;
+  }
+  return { migrated: true, added: ["parsed_content"], existing };
+}
+
+/**
  * Initialize database schema
  * @param {import('node:sqlite').DatabaseSync} db 
  */
@@ -504,7 +623,10 @@ export function initSchema(db) {
   db.exec(SCHEMA_SQL);
   // 老库增量迁移：CREATE TABLE IF NOT EXISTS 不会给已存在的表补列
   migrateMaterialsParseErrorColumns(db);
-  migrateSubmissionsAnnotationsColumn(db);
+    // 三边各加了迁移，都要保留（幂等，重复执行无害）
+    migrateUserAuthColumns(db);
+    migrateSubmissionsAnnotationsColumn(db);
+    migrateSubmissionParsedContentColumn(db);
 }
 
 /**
@@ -521,12 +643,24 @@ export function seedDatabase(db, seedData = {}) {
   const submissions = seedData.submissions || DEFAULT_SUBMISSIONS;
 
   // Insert users
+  //
+  // 身份绑定：密码只存哈希，且**保留已有密码**。
+  // `INSERT OR REPLACE` 是「先删后插」，若每次都重写演示密码，
+  // 谁改过密码、一重启就被打回默认值——那等于密码形同虚设。
+  const existingCredentials = new Map(
+    db
+      .prepare("SELECT id, password_hash FROM users")
+      .all()
+      .map((row) => [row.id, row.password_hash || ""])
+  );
   const insertUser = db.prepare(`
-    INSERT OR REPLACE INTO users (id, username, name, role, initials)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO users (id, username, name, role, initials, password_hash)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
   for (const u of users) {
-    insertUser.run(u.id, u.username, u.name, u.role, u.initials || u.name.slice(0, 1));
+    const carried = existingCredentials.get(u.id) || "";
+    const passwordHash = carried || hashPassword(u.password || DEMO_PASSWORD);
+    insertUser.run(u.id, u.username, u.name, u.role, u.initials || u.name.slice(0, 1), passwordHash);
   }
 
   // Insert courses
@@ -595,8 +729,17 @@ export function seedDatabase(db, seedData = {}) {
   }
 
   // Insert submissions
+  //
+  // **只补不覆盖**：与上面 users 保留密码同一个道理 ——
+  // 提交记录上挂的是**运行期产生的东西**（评分、解析产物、教师批注），
+  // 用 `INSERT OR REPLACE`（先删后插）会在**每次重启**时把它们全部打回种子值：
+  //   · `grades` / `summary` / `history` / `status` 被打回演示初始值
+  //   · `parsed_content` 与 `annotations` 甚至不在下面的列清单里 ⇒ 直接清空
+  // 后果很实在：部署一次、重启一次，刚评好的分和教师写过的批注就没了；
+  // 而 parsedContent 落库本来就是为了「刷新/重启后仍能看到报告」。
+  // 因此这里改成 `INSERT OR IGNORE`：**只在记录不存在时补种子，存在就完全不动**。
   const insertSubmission = db.prepare(`
-    INSERT OR REPLACE INTO submissions (
+    INSERT OR IGNORE INTO submissions (
       id, assignment_id, student_id, file_name, submitted_at, status,
       sample_key, blob_id, grades, summary, history, failure
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
