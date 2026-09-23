@@ -6149,13 +6149,16 @@ figcaption,
 
 .lb-review-split {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
   gap: 20px;
   margin-top: 18px;
   align-items: start;
 }
+.review-reader-column,
+.review-panel-column { min-width: 0; position: sticky; top: 66px; }
 @media (max-width: 1080px) {
   .lb-review-split { grid-template-columns: minmax(0, 1fr); }
+  .review-reader-column,.review-panel-column { position: static; }
 }
 
 /* ---------- 通用控件 ---------- */
@@ -6275,12 +6278,13 @@ figcaption,
 .lb-reader-scroll {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 22px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 18px;
-  max-height: 78vh;
+  max-height: calc(100vh - 240px);
 }
 
 /* A4 纸张 */
@@ -6327,6 +6331,7 @@ figcaption,
   border-radius: 3px;
   box-shadow: inset 0 0 0 1px #f0dda3;
 }
+.lb-evidence-unmatched { padding: 8px 14px; color: #866236; background: #fff8e9; border-bottom: 1px solid #eeddb8; font-size: 11px; line-height: 1.6; }
 
 /* 代码 / 脚本片段 */
 .lb-code {
@@ -6513,11 +6518,14 @@ figcaption,
 .lb-panel {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  height: calc(100vh - 110px);
   background: #fff;
   border: 1px solid var(--line);
   border-radius: 12px;
   overflow: hidden;
 }
+.lb-panel-scroll { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; overscroll-behavior: contain; }
 
 .lb-panel-head {
   display: flex;
@@ -6527,6 +6535,7 @@ figcaption,
   padding: 14px 16px;
   background: #fbfcfa;
   border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
 }
 .lb-panel-kicker { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .lb-total { display: flex; align-items: baseline; gap: 5px; }
@@ -6551,15 +6560,16 @@ figcaption,
 
 .lb-summary { padding: 14px 16px; border-bottom: 1px solid var(--line); background: #fcfdfb; }
 .lb-summary-title { font-size: 12px; font-weight: 600; color: var(--ink); margin-bottom: 7px; }
-.lb-summary p { margin: 0; font-size: 12px; line-height: 1.85; color: #4c5a52; background: #fff; border: 1px solid var(--line); border-radius: 9px; padding: 11px 13px; }
+.lb-summary p { margin: 0; font-size: 12px; line-height: 1.85; color: #4c5a52; background: #fff; border: 1px solid var(--line); border-radius: 9px; padding: 11px 13px; overflow-wrap: anywhere; }
 
-.lb-items { flex: 1; overflow-y: auto; padding: 14px 16px 18px; max-height: 76vh; }
+.lb-items { min-width: 0; padding: 14px 16px 18px; }
 .lb-items-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
 .lb-items-head strong { font-size: 12px; letter-spacing: .04em; color: var(--ink); text-transform: uppercase; }
 .lb-items-head span { font-size: 11px; color: var(--muted); }
 
 /* 评分项卡片 */
 .lb-item {
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #fff;
@@ -6613,27 +6623,31 @@ figcaption,
 
 /* 覆盖 / 缺失 */
 .lb-coverage { background: #f7f9f5; border: 1px solid #edf1e9; border-radius: 9px; padding: 9px 11px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 7px; }
-.lb-coverage-row { display: flex; align-items: flex-start; gap: 7px; font-size: 11px; line-height: 1.75; }
+.lb-coverage-row { display: flex; align-items: flex-start; gap: 7px; min-width: 0; font-size: 11px; line-height: 1.75; }
 .lb-coverage-row b { flex-shrink: 0; }
 .lb-coverage-row.ok { color: #35704f; }
 .lb-coverage-row.miss { color: #9c4a3a; }
-.lb-coverage-tags { display: flex; flex-wrap: wrap; gap: 5px; }
-.lb-coverage-tags span { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: 11px; }
+.lb-coverage-tags { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; gap: 5px; }
+.lb-coverage-tags span { min-width: 0; max-width: 100%; overflow-wrap: anywhere; white-space: normal; background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: 11px; }
 
 /* 关联证据 */
 .lb-evidence {
+  min-width: 0;
   border-left: 3px solid #d8c48a;
   background: #fbf7ea;
   border-radius: 0 8px 8px 0;
   padding: 9px 11px;
   margin-bottom: 10px;
   transition: box-shadow .16s, background .16s;
+  cursor: pointer;
 }
 .lb-evidence.hot { background: #fdf1cc; box-shadow: 0 0 0 2px #e8cf87; }
+.lb-evidence:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 .lb-evidence b { font-size: 11px; color: #8a6a2c; }
-.lb-evidence p { margin: 4px 0 0; font-size: 12px; line-height: 1.8; color: #5c4a26; font-style: italic; }
+.lb-evidence p { margin: 4px 0 0; font-size: 12px; line-height: 1.8; color: #5c4a26; font-style: italic; overflow-wrap: anywhere; }
 
-.lb-comment { width: 100%; }
+.lb-comment { display: block; width: 100%; min-width: 0; }
+.lb-comment > span { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 600; color: var(--muted); }
 .lb-comment textarea {
   width: 100%;
   min-height: 54px;
@@ -6645,9 +6659,14 @@ figcaption,
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 9px 10px;
-  resize: vertical;
+  overflow-y: hidden;
+  resize: none;
 }
 .lb-comment textarea:focus { outline: 2px solid #cfe0cb; outline-offset: -1px; background: #fff; }
+@media (max-width: 1080px) {
+  .lb-panel { height: auto; max-height: none; }
+  .lb-panel-scroll { overflow: visible; }
+}
 
 /* 报告示意图节点（真实截图见「报告内嵌图」区，这里只画结构示意） */
 .lb-diagram-node {

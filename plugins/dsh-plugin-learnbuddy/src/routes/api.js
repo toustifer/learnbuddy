@@ -1200,6 +1200,28 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
       }
     }
 
+    const annotationDeleteMatch = pathname.match(/^\/api\/learnbuddy\/submissions\/([^/]+)\/annotations\/([^/]+)$/);
+    if (req.method === "DELETE" && annotationDeleteMatch) {
+      const submissionId = decodeURIComponent(annotationDeleteMatch[1]);
+      const annotationId = decodeURIComponent(annotationDeleteMatch[2]);
+      const annoAuth = requireActor(req);
+      if (!annoAuth.ok) return sendJson(res, annoAuth.status, { ok: false, error: annoAuth.error });
+      if (!store.getSubmission(submissionId, annoAuth.user.id)) {
+        return sendJson(res, 404, { ok: false, error: "提交记录不存在" });
+      }
+      if (annoAuth.user.role !== "teacher") {
+        return sendJson(res, 403, { ok: false, error: "权限不足：只有教师可以删除批注" });
+      }
+      const rawSubmission = store.getSubmission(submissionId);
+      const existing = Array.isArray(rawSubmission.annotations) ? rawSubmission.annotations : [];
+      const remaining = existing.filter((annotation) => annotation.id !== annotationId);
+      if (remaining.length === existing.length) {
+        return sendJson(res, 404, { ok: false, error: "批注不存在" });
+      }
+      store.updateSubmission(submissionId, { annotations: remaining });
+      return sendJson(res, 200, { ok: true, submissionId, annotationId });
+    }
+
     // ==========================================
     // 8.1 作业维度学情分析与全班薄弱项
     //     GET /api/learnbuddy/analytics/assignment/:id

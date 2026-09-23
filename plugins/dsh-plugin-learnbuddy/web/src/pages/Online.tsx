@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, RefreshCw, Search } from "lucide-react";
+import { ArrowLeft, ArrowRight, FileText, RefreshCw, Search } from "lucide-react";
 import { Button } from "@radix-ui/themes";
 import { request, ApiError } from "../api";
 import { visibleAssignments, visibleCourses } from "../domain";
@@ -128,6 +128,36 @@ export function validateServerGrades(grades: ServerGrade[], rubric: Rubric[]) {
   });
 }
 
+export function updateReviewGrade(review: ServerReview, index: number, patch: Partial<ServerGrade>): ServerReview {
+  const grades = review.grades.map((grade, i) => i === index ? { ...grade, ...patch } : grade);
+  const totalScore = Math.round(grades.reduce((sum, grade) => sum + (Number.isFinite(grade.score) ? grade.score : 0), 0) * 10) / 10;
+  return { ...review, grades, totalScore };
+}
+
+interface StoredAnnotation {
+  id: string;
+  page: number;
+  quote?: string;
+  comment?: string;
+  color?: ReportAnnotation["color"];
+  createdAt: string;
+}
+
+function toReportAnnotation(annotation: StoredAnnotation): ReportAnnotation {
+  const createdAt = new Date(annotation.createdAt);
+  return {
+    id: annotation.id,
+    page: annotation.page,
+    quote: annotation.quote,
+    text: annotation.comment || "",
+    color: annotation.color,
+    createdAt: Number.isNaN(createdAt.valueOf()) ? annotation.createdAt : new Intl.DateTimeFormat("zh-CN", {
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(createdAt),
+    author: "teacher",
+  };
+}
+
 export function OnlineGrading({ id }: { id: string }) {
   const {
     state,
@@ -155,6 +185,8 @@ export function OnlineGrading({ id }: { id: string }) {
     } catch { /* optional selection preference */ }
     return submissions[0]?.id || "";
   });
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
   const [studentSearch, setStudentSearch] = useState("");
   const [studentFilter, setStudentFilter] = useState("all");
   useEffect(() => {
@@ -183,6 +215,7 @@ export function OnlineGrading({ id }: { id: string }) {
   const [annotations, setAnnotations] = useState<ReportAnnotation[]>([]);
   const [parsedReport, setParsedReport] = useState<ParsedReportContent | null>(null);
   const saved = submissions.find((s) => s.id === selected);
+  const legacySampleScore = saved?.summary?.startsWith("本地测试评分，共") === true;
   // current 必须在使用它的 useEffect 之前声明，
   // 否则依赖数组里的引用会触发 TDZ（Cannot access 'current' before initialization）
   const current = reviews[selected];
@@ -202,22 +235,29 @@ export function OnlineGrading({ id }: { id: string }) {
     }
   }, [selected, saved, reviews, setReviews, assignment]);
 
-  // 把后端返回的**真实解析产物**投影给左侧阅读器。
-  // 拿不到真实解析结果就显示「解析不可用」空态 —— 不在前端构造演示正文
-  //（返工单 P1-4：不允许生成看起来正常的假内容）。
+  // 评分数据刷新时只更新正文；教师批注和证据定位属于当前报告的编辑状态。
   useEffect(() => {
-    if (!saved) {
-      setParsedReport(null);
-      return;
-    }
-    const parsed = (current as { parsedContent?: ParsedReportContent } | undefined)?.parsedContent;
+    const parsed = (current as { parsedContent?: ParsedReportContent } | undefined)?.parsedContent ?? saved?.parsedContent;
     setParsedReport(parsed ?? null);
-    // 切换报告必须清掉上一份的定位、高亮与批注，避免沿用上一份的引用
+  }, [saved?.parsedContent, current?.parsedContent]);
+  useEffect(() => {
+    // 切换提交时清理临时定位，并读取该提交已保存的教师批注。
     setActivePage(undefined);
     setActiveHighlightQuote(null);
     setActiveRubricId(null);
     setAnnotations([]);
-  }, [selected, saved, current]);
+    if (!selected) return;
+    const controller = new AbortController();
+    void request<{ annotations: StoredAnnotation[] }>(
+      `/submissions/${encodeURIComponent(selected)}/annotations`,
+      { signal: controller.signal },
+    ).then((result) => {
+      if (!controller.signal.aborted) setAnnotations((result.annotations || []).map(toReportAnnotation));
+    }).catch((cause) => {
+      if (!controller.signal.aborted) setError(`批注读取失败：${(cause as Error).message}`);
+    });
+    return () => controller.abort();
+  }, [selected]);
   const isBusy = !!pending || !!busy["server-grade:" + id];
   const rubric: Rubric[] = assignment?.rubric || [];
   // 把后端评分项与作业 Rubric 对齐成面板需要的形状：
@@ -303,15 +343,39 @@ export function OnlineGrading({ id }: { id: string }) {
     });
   }
   function patchGrade(index: number, patch: Partial<ServerGrade>) {
-    setReviews((previous) => ({
+    setReviews((previous) => previous[selected] ? ({
       ...previous,
-      [selected]: {
-        ...previous[selected],
-        grades: previous[selected].grades.map((grade, i) =>
-          i === index ? { ...grade, ...patch } : grade,
-        ),
-      },
-    }));
+      [selected]: updateReviewGrade(previous[selected], index, patch),
+    }) : previous);
+  }
+  async function addAnnotation(annotation: Omit<ReportAnnotation, "id" | "createdAt">) {
+    const submissionId = selected;
+    const id = `anno-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      const result = await request<{ annotation: StoredAnnotation }>(
+        `/submissions/${encodeURIComponent(submissionId)}/annotations`,
+        jsonPost({ id, page: annotation.page, quote: annotation.quote, comment: annotation.text, color: annotation.color }),
+      );
+      if (selectedRef.current === submissionId) {
+        setAnnotations((previous) => [...previous, toReportAnnotation(result.annotation)]);
+      }
+    } catch (cause) {
+      if (selectedRef.current === submissionId) setError(`批注保存失败：${(cause as Error).message}`);
+    }
+  }
+  async function deleteAnnotation(annotationId: string) {
+    const submissionId = selected;
+    try {
+      await request(
+        `/submissions/${encodeURIComponent(submissionId)}/annotations/${encodeURIComponent(annotationId)}`,
+        { method: "DELETE" },
+      );
+      if (selectedRef.current === submissionId) {
+        setAnnotations((previous) => previous.filter((annotation) => annotation.id !== annotationId));
+      }
+    } catch (cause) {
+      if (selectedRef.current === submissionId) setError(`批注删除失败：${(cause as Error).message}`);
+    }
   }
   return (
     <div className="page online-grading">
@@ -351,7 +415,7 @@ export function OnlineGrading({ id }: { id: string }) {
         </div>
         <div className="table-scroll"><table className="data-table"><thead><tr><th>学生</th><th>提交文件</th><th>提交时间</th><th>状态</th><th className="numeric">分数</th><th>操作</th></tr></thead><tbody>
           {members.map(({ student }) => ({ student, submission: latestSubmission(submissions, id, student.id) })).filter(({ student, submission }) => student.name.includes(studentSearch) && (studentFilter === "all" || (studentFilter === "missing" ? !submission : submission?.status === studentFilter))).map(({ student, submission }) => <tr key={student.id} className={submission?.id === selected ? "selected-row" : ""}>
-            <td><strong>{student.name}</strong><small>{student.username}</small></td><td>{submission?.fileName || "—"}{submission?.sampleKey && <small>教学样例</small>}</td><td className="cell-muted">{submission ? dateLabel(submission.submittedAt) : "—"}</td><td><SubmissionStatus teacher submission={submission && reviews[submission.id] ? { ...submission, status: reviews[submission.id].status as typeof submission.status } : submission} /></td><td className="numeric">{submission ? reviews[submission.id]?.totalScore ?? scoreOf(submission) ?? "—" : "—"}</td><td><button className="text-button" disabled={!submission || isBusy} onClick={() => { setSelected(submission!.id); setError(""); setConfirmPublish(false); }}>查看报告</button></td>
+            <td><strong>{student.name}</strong><small>{student.username}</small></td><td>{submission?.fileName || "—"}{submission?.sampleKey && <small>教学样例</small>}{submission?.fileName.startsWith("本地测试 ·") && <small>本地测试报告</small>}</td><td className="cell-muted">{submission ? dateLabel(submission.submittedAt) : "—"}</td><td><SubmissionStatus teacher submission={submission && reviews[submission.id] ? { ...submission, status: reviews[submission.id].status as typeof submission.status } : submission} /></td><td className="numeric">{submission ? reviews[submission.id]?.totalScore ?? scoreOf(submission) ?? "—" : "—"}</td><td><button className="review-action report-open-action" disabled={!submission || isBusy} onClick={() => { setSelected(submission!.id); setError(""); setConfirmPublish(false); }}><FileText size={14} />查看报告</button></td>
           </tr>)}
         </tbody></table></div>
       </div>
@@ -439,7 +503,7 @@ export function OnlineGrading({ id }: { id: string }) {
       {current && (
         <div className="lb-review-split">
           {/* 左侧：真实报告阅读器。只渲染后端解析产物，拿不到就显示空态 */}
-          <div style={{ position: "sticky", top: "20px" }}>
+          <div className="review-reader-column">
             {/* 只要有原件或有解析产物，就渲染阅读器 ——
                 未评分的提交也应当能先看原件（教师本来就要先读报告再打分）。 */}
             {(parsedReport?.structuredPages?.length ?? 0) > 0 || saved?.blobId ? (
@@ -449,8 +513,15 @@ export function OnlineGrading({ id }: { id: string }) {
                     <span className="lb-chip warn">内置演示样例 · 不作为正式评分依据</span>
                   </div>
                 )}
+                {legacySampleScore && (
+                  <div style={{ marginBottom: 10 }}>
+                    <span className="lb-chip warn">历史模拟评分 · 仅供演示复核</span>
+                  </div>
+                )}
                 <ReportViewer
                   fileName={parsedReport?.title || saved?.fileName}
+                  initialView={saved?.fileName.startsWith("本地测试 ·") ? "formatted" : undefined}
+                  syntheticMaterial={saved?.fileName.startsWith("本地测试 ·")}
                   blobId={saved?.blobId}
                   pages={parsedReport?.structuredPages || []}
                   activePage={activePage ?? 1}
@@ -463,33 +534,20 @@ export function OnlineGrading({ id }: { id: string }) {
                   originalPages={parsedReport?.originalPages ?? null}
                   pagesEstimated={parsedReport?.pagesEstimated === true}
                   onPageChange={setActivePage}
-                  onAddAnnotation={(ann) =>
-                    setAnnotations((prev) => [
-                      ...prev,
-                      {
-                        ...ann,
-                        id: `anno-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                        createdAt: new Date().toISOString().slice(0, 16).replace("T", " "),
-                      },
-                    ])
-                  }
-                  onDeleteAnnotation={(annId) =>
-                    setAnnotations((prev) => prev.filter((a) => a.id !== annId))
-                  }
+                  onAddAnnotation={(annotation) => void addAnnotation(annotation)}
+                  onDeleteAnnotation={(annotationId) => void deleteAnnotation(annotationId)}
                 />
               </>
             ) : (
               <div className="lb-empty">
-                <strong>没有可显示的内容</strong>
-                <span>
-                  这份提交既没有原件（blobId），也没有可渲染的解析结果。请核对学生是否真的上传了文件。
-                </span>
+                <strong>{saved?.sampleKey ? "模拟数据，暂无文件" : "没有可显示的内容"}</strong>
+                <span>{saved?.sampleKey ? "这条历史教学样例没有学生报告原件。可选择带测试报告的提交，运行真实 AutoGrader。" : "这份提交没有原件或可渲染的解析结果，请核对上传记录。"}</span>
               </div>
             )}
           </div>
 
           {/* 右侧：Rubric 评分复核与 Teacher-in-the-loop 人机协同面板 */}
-          <div>
+          <div className="review-panel-column">
             <RubricEvaluationPanel
               grades={panelGrades}
               activeRubricId={activeRubricId}

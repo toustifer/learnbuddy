@@ -71,6 +71,13 @@
 .cell-link:hover { text-decoration:underline; text-underline-offset:3px; color:#277459; }
 .cell-muted { color:#929b95; font-size:11px; white-space:nowrap; }
 .cell-actions { display:flex; align-items:center; gap:12px; }
+.assignment-register .cell-actions { gap:8px; }
+.review-action { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:32px; padding:5px 11px; border:1px solid #c9dfd1; border-radius:6px; background:#eaf4ed; color:#1f6545; font-size:12px; font-weight:650; white-space:nowrap; transition:background .15s,border-color .15s; }
+.review-action:hover { background:#dceee2; border-color:#9fc9ad; }
+.review-action:focus-visible { outline:2px solid #277459; outline-offset:2px; }
+.review-action:disabled { opacity:.45; cursor:not-allowed; }
+.report-open-action { min-height:34px; padding:6px 12px; }
+.review-register .selected-row .report-open-action { background:#dceee2; border-color:#9fc9ad; }
 .state-label { display:inline-flex; align-items:center; gap:5px; font-size:10px; padding:3px 7px; border-radius:4px; white-space:nowrap; font-weight:450; }
 .state-label.success { background:#eaf3ec; color:#427956; }
 .state-label.pending { background:#faf2e4; color:#a1854b; }
@@ -118,13 +125,27 @@
 .form-disclosure { margin-top:15px; color:#82917a; font-size:12px; }
 .form-disclosure summary { cursor:pointer; padding:5px 0; }
 .material-checklist { padding:10px 0; display:grid; gap:10px; }
-.material-checklist label,.checkbox-line { display:flex; flex-direction:row; align-items:center; gap:8px; margin:0; font-size:11px; font-weight:400; color:#7b8a73; }
-.checkbox-line { margin-top:15px; }
+.material-checklist label { display:flex; flex-direction:row; align-items:center; gap:8px; margin:0; font-size:11px; font-weight:400; color:#7b8a73; }
+.rubric-heading { display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; }
+.rubric-heading h2 { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.rubric-lock-badge { display:inline-flex; align-items:center; gap:4px; padding:4px 7px; border-radius:5px; background:#f7ebd9; color:#866236; font-size:11px; font-weight:600; }
+.rubric-add-action { display:inline-flex; align-items:center; gap:6px; min-height:31px; padding:5px 9px; border:1px solid #d4e5d9; border-radius:6px; color:#27684a; background:#f3f8f4; font-size:12px; font-weight:600; }
+.rubric-add-action:hover:not(:disabled) { background:#e7f2ea; }
+.rubric-add-action.is-locked:disabled { opacity:1; color:#946d40; border-color:#eadcc6; background:#fbf5ea; cursor:not-allowed; }
+.rubric-lock-notice { display:flex; align-items:flex-start; gap:10px; margin:0 0 14px; padding:11px 13px; border:1px solid #eddec5; border-left:3px solid #bd9161; border-radius:6px; background:#fcf8f1; color:#7d694d; font-size:12px; line-height:1.7; }
+.rubric-lock-notice svg { flex-shrink:0; margin-top:2px; color:#a47845; }
+.rubric-lock-notice strong { color:#785832; }
+.rubric-help { margin-top:10px; color:#96734a; font-size:11px; }
 .rubric-editor { min-width:560px; }
 .rubric-editor td { padding:10px; vertical-align:top; }
 .rubric-editor th:first-child { width:26%; }
 .rubric-editor th:nth-child(3) { width:82px; }
 .rubric-editor td input,.rubric-editor td textarea { font-size:12px; padding:8px; min-height:34px; }
+.rubric-editor.is-locked td { background:#fcfbf8; }
+.rubric-editor.is-locked td input:disabled,.rubric-editor.is-locked td textarea:disabled { opacity:1; color:#6d766e; background:#f7f6f2; border-color:#e6e3da; cursor:not-allowed; }
+.rubric-remove-action { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:1px solid transparent; border-radius:6px; color:#74877a; }
+.rubric-remove-action:hover:not(:disabled) { background:#fbeeed; color:#a5534d; }
+.rubric-remove-action.is-locked:disabled { opacity:1; color:#a38359; background:#f8f0e4; border-color:#eadcc6; cursor:not-allowed; }
 .form-action-bar { display:flex; align-items:center; gap:10px; padding:16px 0 0; border-top:1px solid var(--line); }
 .form-action-bar > span { flex:1; }
 .assignment-form-page { max-width:1040px; }

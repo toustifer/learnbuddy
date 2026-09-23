@@ -1,9 +1,14 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { DocumentPage, ReportAnnotation, ReportImageRef } from "../types";
 import { fileUrl, previewUrl } from "../api";
+import { findEvidenceSpans } from "../evidence-highlight";
 
 export interface ReportViewerProps {
   fileName?: string;
+  /** Some embedded browsers cannot paint PDFs; a caller may prefer parsed text. */
+  initialView?: "source" | "formatted";
+  /** Synthetic source material has no actual student-uploaded original. */
+  syntheticMaterial?: boolean;
   /**
    * 报告原件的 blobId（内容寻址，带扩展名）。
    *
@@ -53,6 +58,8 @@ const extOf = (blobId?: string | null) =>
 
 export const ReportViewer: React.FC<ReportViewerProps> = ({
   fileName = "学生提交报告",
+  initialView,
+  syntheticMaterial = false,
   blobId = null,
   pages,
   activePage,
@@ -76,22 +83,33 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({
   // 叁种视图：原件 / 解析文本（排版视图）/ 带批注视图
   // 默认值按「能不能内嵌原件」决定 —— 能就默认给原件（教师最想看的就是它）
   const [viewMode, setViewMode] = useState<"source" | "formatted" | "preview">(
-    canPreviewInline(blobId) ? "source" : "formatted"
+    initialView === "formatted" ? "formatted" : canPreviewInline(blobId) ? "source" : "formatted"
   );
   const containerRef = useRef<HTMLDivElement>(null);
+  const readerScrollRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const hasEvidenceMatch = useMemo(() => Boolean(highlightQuote && pages.some((page) =>
+    page.paragraphs.some((paragraph) => findEvidenceSpans(paragraph, highlightQuote).length > 0)
+  )), [highlightQuote, pages]);
 
   // 换报告时重新决定默认视图：能看原件就默认原件，不能就回到解析文本
   useEffect(() => {
-    setViewMode(canPreviewInline(blobId) ? "source" : "formatted");
-  }, [blobId]);
+    setViewMode(initialView === "formatted" ? "formatted" : canPreviewInline(blobId) ? "source" : "formatted");
+  }, [blobId, initialView]);
 
-  // 监听 activePage 变动，平滑滚动至对应页
+  // 证据定位滚动阅读器自身；避免 scrollIntoView 把整页及右侧操作栏推走。
   useEffect(() => {
-    if (pageRefs.current[activePage]) {
-      pageRefs.current[activePage]?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-  }, [activePage]);
+    if (viewMode === "source") return;
+    const frame = requestAnimationFrame(() => {
+      const scroller = readerScrollRef.current;
+      const page = pageRefs.current[activePage];
+      const target = (highlightQuote && (page?.querySelector(".lb-mark") || scroller?.querySelector(".lb-mark"))) || page;
+      if (!scroller || !target) return;
+      const offset = target.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      scroller.scrollTo({ top: scroller.scrollTop + offset - (highlightQuote ? scroller.clientHeight * .3 : 12), behavior: "smooth" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activePage, highlightQuote, viewMode, pages]);
 
   // 处理用户在阅读区划词
   const handleMouseUp = () => {
@@ -122,24 +140,20 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({
     setViewMode("preview");
   };
 
-  /** 在段落文本里定位证据原文并高亮（仅当 quote 真实存在于正文时才高亮） */
+  /** 只高亮确实出现在解析文本里的原文片段。 */
   const renderHighlightedText = (text: string, currentQuote?: string | null) => {
-    if (!currentQuote || !currentQuote.trim()) return text;
-    const cleanQuote = currentQuote.trim();
-    if (!text.toLowerCase().includes(cleanQuote.toLowerCase())) return text;
-
-    const parts = text.split(new RegExp(`(${cleanQuote.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"));
+    const spans = currentQuote ? findEvidenceSpans(text, currentQuote) : [];
+    if (!spans.length) return text;
+    let cursor = 0;
     return (
       <>
-        {parts.map((part, i) =>
-          part.toLowerCase() === cleanQuote.toLowerCase() ? (
-            <mark className="lb-mark" key={i} title="Rubric 评分关联证据">
-              {part}
-            </mark>
-          ) : (
-            part
-          )
-        )}
+        {spans.map((span, index) => {
+          const before = text.slice(cursor, span.start);
+          const match = text.slice(span.start, span.end);
+          cursor = span.end;
+          return <React.Fragment key={`${span.start}-${index}`}>{before}<mark className="lb-mark" title="Rubric 评分关联证据">{match}</mark></React.Fragment>;
+        })}
+        {text.slice(cursor)}
       </>
     );
   };
@@ -215,7 +229,7 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({
               <button
                 className={viewMode === "source" ? "on" : ""}
                 onClick={() => setViewMode("source")}
-                title="直接看学生交的那份原件"
+                title={syntheticMaterial ? "测试材料没有学生上传的原件" : "直接看学生交的那份原件"}
               >
                 原件
               </button>
@@ -227,15 +241,29 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({
               批注
             </button>
           </div>
+          {blobId && <a className="lb-btn" href={fileUrl(blobId)} target="_blank" rel="noreferrer">{syntheticMaterial ? "打开测试 PDF" : "打开原件"}</a>}
         </div>
       </div>
+
+      {highlightQuote && !hasEvidenceMatch && (
+        <div className="lb-evidence-unmatched" role="status">这条证据摘录无法在解析文本中精确定位，请核对原件。</div>
+      )}
 
       {/* ── 原件视图：直接渲染学生交的那份文件 ──
           能内嵌的（PDF / 图片）用 iframe 原生渲染；
           不能内嵌的（Word 等）如实说明并给出「打开原件」，绝不糊一个空白框。 */}
       {viewMode === "source" && (
         <div className="lb-source">
-          {canPreviewInline(blobId) ? (
+          {syntheticMaterial ? (
+            <div className="lb-source-fallback">
+              <strong>模拟数据，暂无文件</strong>
+              <p>这是用于运行真实 AutoGrader 的测试材料，没有学生上传的原件。可在“解析文本”中核对内容，或单独打开生成的测试 PDF。</p>
+              <div className="lb-source-actions">
+                <button className="lb-btn primary" onClick={() => setViewMode("formatted")}>查看解析文本</button>
+                {blobId && <a className="lb-btn" href={fileUrl(blobId)} target="_blank" rel="noreferrer">打开测试 PDF</a>}
+              </div>
+            </div>
+          ) : canPreviewInline(blobId) ? (
             <iframe
               className="lb-source-frame"
               src={previewUrl(blobId as string)}
@@ -265,7 +293,7 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({
       )}
 
       {/* 报告正文主滚动区域（A4 纸张排版） */}
-      <div className="lb-reader-scroll" onMouseUp={handleMouseUp} style={viewMode === "source" ? { display: "none" } : undefined}>
+      <div className="lb-reader-scroll" ref={readerScrollRef} onMouseUp={handleMouseUp} style={viewMode === "source" ? { display: "none" } : undefined}>
         {pages.map((page, index) => {
           const pageNum = index + 1;
           const isActive = pageNum === activePage;

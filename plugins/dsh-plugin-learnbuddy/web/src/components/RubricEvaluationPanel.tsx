@@ -25,6 +25,28 @@ const ATTENTION_LABEL: Record<string, { text: string; tone: "alert" | "warn" }> 
   needs_attention: { text: "待复核", tone: "warn" },
 };
 
+function GradeComment({ value, rubricId, onChange }: { value: string; rubricId: string; onChange: (rubricId: string, comment: string) => void }) {
+  const inputRef = React.useRef<HTMLTextAreaElement>(null);
+  React.useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight + 2}px`;
+  }, [value]);
+  return (
+    <label className="lb-comment" onClick={(event) => event.stopPropagation()}>
+      <span>评语 · 可修改</span>
+      <textarea
+        ref={inputRef}
+        value={value}
+        placeholder="填写评语……"
+        onChange={(event) => onChange(rubricId, event.target.value)}
+        rows={2}
+      />
+    </label>
+  );
+}
+
 export const RubricEvaluationPanel: React.FC<RubricEvaluationPanelProps> = ({
   grades,
   activeRubricId,
@@ -99,6 +121,7 @@ export const RubricEvaluationPanel: React.FC<RubricEvaluationPanelProps> = ({
         </div>
       )}
 
+      <div className="lb-panel-scroll">
       {/* 评阅总体概述 */}
       <div className="lb-summary">
         <div className="lb-summary-title">综合小结</div>
@@ -195,24 +218,31 @@ export const RubricEvaluationPanel: React.FC<RubricEvaluationPanelProps> = ({
 
               {/* 关联证据引用 */}
               {g.evidence && (
-                <div className={`lb-evidence${isEvidenceActive ? " hot" : ""}`}>
+                <div
+                  className={`lb-evidence${isEvidenceActive ? " hot" : ""}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`定位${g.title || g.rubricId}的原文证据`}
+                  onClick={(event) => { event.stopPropagation(); onSelectGrade(g); }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onSelectGrade(g);
+                    }
+                  }}
+                >
                   <b>证据</b>
                   <p>“{g.evidence}”</p>
                 </div>
               )}
 
               {/* 评语编辑框 */}
-              <div className="lb-comment" onClick={(e) => e.stopPropagation()}>
-                <textarea
-                  value={g.comment || ""}
-                  placeholder="填写评语……"
-                  onChange={(e) => onCommentChange(g.rubricId, e.target.value)}
-                  rows={2}
-                />
-              </div>
+              <GradeComment value={g.comment || ""} rubricId={g.rubricId} onChange={onCommentChange} />
             </div>
           );
         })}
+      </div>
       </div>
     </div>
   );

@@ -23,6 +23,14 @@ npm run build:dsh
 
 网页产物为 `dist/`，基础路径 `/learnbuddy/`。本轮没有部署到线上。修改 Context 类型等基础模块后，若开发热更新出现上下文错误，完整刷新页面；生产产物不使用热更新。
 
+## 本地 AutoGrader 测试数据
+
+启动 `npm run dev:services` 后，在 `web` 目录运行 `npm run demo:autograder`。脚本只操作 `.dsh-preview/teaching-data`：生成计算机网络与操作系统作业的测试 PDF，用现有解析链路保存正文，保持新提交为“待评阅”，不预填分数。教师在评阅页点击“AI 辅助评阅”后，服务端以 `strictLLM` 模式运行真实 AutoGrader；模型不可用时明确报错，不把规则或固定分数当作真实评阅。旧的内置教学样例仍可作为兜底展示，页面会标明来源。脚本还创建一份没有学生提交的草稿，用来测试评分项的新增、删除和保存。重复运行会保留已有评阅与教师修改。
+
+访问 `/learnbuddy/#grading/lab-tcp` 或 `/learnbuddy/#grading/lab-os` 查看测试报告，或访问 `/learnbuddy/#assignment/local-rubric-draft` 测试可编辑评分标准。测试材料并非学生真正上传的原件，阅读器默认显示 PDF 的真实解析文本，生成的 PDF 可单独打开。
+
+教师修改单项分数时，总分立即重算；报告批注写入本地服务端，切换评分证据或刷新页面后仍可读取。最终成绩与反馈仍由教师确认发布。
+
 ## 使用边界
 
 - `student.lin`、`teacher.chen` 等演示账号密码为 `123`，身份以登录接口响应为准；当前服务端鉴权仍需完善。

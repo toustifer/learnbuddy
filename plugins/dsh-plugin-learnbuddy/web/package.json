@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "dev:services": "node dev-services.mjs",
+    "demo:autograder": "node ../scripts/prepare-local-autograder-demo.mjs",
     "check:llm": "node --env-file=.env.local ../scripts/verify-live-llm.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1",

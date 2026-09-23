@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowDownToLine, ArrowLeft, ArrowRight, Plus, RefreshCw, Search, X } from "lucide-react";
+import { ArrowDownToLine, ArrowLeft, ArrowRight, ClipboardCheck, Plus, RefreshCw, Search, X } from "lucide-react";
 import { Select } from "@radix-ui/themes";
 import { LIVE_MODE, fileUrl, previewUrl } from "../api";
 import { visibleAssignments, visibleCourses } from "../domain";
@@ -125,7 +125,7 @@ export function AcademicAssignments() {
             <td><button className="cell-link" onClick={() => go({ page: teacher ? "grading" : "assignment", id: assignment.id })}>{assignment.title}</button><small><CourseBadge id={assignment.courseId} />{!assignment.published && <span className="state-label neutral">草稿</span>}</small></td>
             <td className="cell-muted">{dateLabel(assignment.due)}</td>
             {teacher ? <><td className="numeric"><strong>{latest.length}</strong><span className="cell-muted"> / {students.length}</span></td><td className="numeric">{latest.filter((s) => s.status === "review").length || "—"}</td><td className="numeric">{latest.filter((s) => s.status === "published").length || "—"}</td></> : <><td><SubmissionStatus submission={mine} /></td><td className="numeric">{mine?.status === "published" ? scoreOf(mine) ?? "—" : "—"}</td></>}
-            <td><div className="cell-actions">{teacher ? <><button className="text-button" onClick={() => go({ page: "grading", id: assignment.id })}>评阅</button><button className="text-button muted" onClick={() => go({ page: "assignment", id: assignment.id })}>设置</button></> : <button className="text-button" onClick={() => go(mine?.status === "published" ? { page: "report", id: mine.id } : { page: "assignment", id: assignment.id })}>{mine?.status === "published" ? "查看反馈" : "查看任务"}<ArrowRight size={13} /></button>}</div></td>
+            <td><div className="cell-actions">{teacher ? <><button className="review-action" onClick={() => go({ page: "grading", id: assignment.id })}><ClipboardCheck size={15} aria-hidden="true" />评阅</button><button className="text-button muted" onClick={() => go({ page: "assignment", id: assignment.id })}>设置</button></> : <button className="text-button" onClick={() => go(mine?.status === "published" ? { page: "report", id: mine.id } : { page: "assignment", id: assignment.id })}>{mine?.status === "published" ? "查看反馈" : "查看任务"}<ArrowRight size={13} /></button>}</div></td>
           </tr>)}
         </tbody></table>}
       </div>

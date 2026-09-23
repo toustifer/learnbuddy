@@ -90,6 +90,7 @@ async function startTestServer() {
     get: (p, headers) => makeHttpRequest(port, "GET", p, headers, null),
     post: (p, body, headers = {}) =>
       makeHttpRequest(port, "POST", p, { "Content-Type": "application/json", ...headers }, body),
+    delete: (p, headers = {}) => makeHttpRequest(port, "DELETE", p, headers, null),
     close: async () => {
       await new Promise((resolve) => server.close(resolve));
       store.close();
@@ -295,6 +296,22 @@ test("批注·写入 - 任课教师可以写，并且写得进去、读得回来
     const read = await t.get(`${BASE}/submissions/sub-xu-os/annotations`, await t.as("t-chen"));
     assert.equal(read.json.annotations.length, 1, "写入后应能读回");
     assert.equal(read.json.annotations[0].quote, "运行日志展示缓冲区容量");
+  } finally {
+    await t.close();
+  }
+});
+
+test("批注·删除 - 任课教师可删除自己的课程批注，学生不能删除", async () => {
+  const t = await startTestServer();
+  try {
+    seedAnnotation(t.store, "sub-xu-os", "待教师核对");
+    const path = `${BASE}/submissions/sub-xu-os/annotations/anno-seed-sub-xu-os`;
+    const denied = await t.delete(path, await t.as("s-xu"));
+    assert.equal(denied.statusCode, 403);
+    assert.equal(t.store.getSubmission("sub-xu-os").annotations.length, 1);
+    const removed = await t.delete(path, await t.as("t-chen"));
+    assert.equal(removed.statusCode, 200);
+    assert.deepEqual(t.store.getSubmission("sub-xu-os").annotations, []);
   } finally {
     await t.close();
   }

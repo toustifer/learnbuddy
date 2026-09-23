@@ -13,7 +13,7 @@ import {
   uploadMaterial,
 } from "./api";
 import { freshState, users } from "./seed";
-import { validateServerGrades } from "./pages/Online";
+import { updateReviewGrade, validateServerGrades } from "./pages/Online";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -267,6 +267,21 @@ describe("teacher review validation uses the server rubric", () => {
         rubric,
       ),
     ).toBe(true);
+  });
+});
+
+describe("teacher review total", () => {
+  it("recalculates the visible total when a teacher changes one rubric score", () => {
+    const review = {
+      submissionId: "sub-1", status: "review", totalScore: 70, maxScore: 100,
+      grades: [{ rubricId: "r1", score: 20 }, { rubricId: "r2", score: 50 }],
+      summary: "待复核",
+    };
+    expect(updateReviewGrade(review, 0, { score: 15 })).toMatchObject({
+      totalScore: 65,
+      grades: [{ score: 15 }, { score: 50 }],
+    });
+    expect(updateReviewGrade(review, 0, { comment: "补充说明" }).totalScore).toBe(70);
   });
 });
 
