@@ -295,6 +295,7 @@ export class FeedbackAnalyticsService {
         history: [...existingHistory, versionSnapshot],
         failure: null
       });
+      this.store.clearReviewDraft(submissionId);
 
       return {
         updatedSubmission: updated,

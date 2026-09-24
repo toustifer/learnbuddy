@@ -692,6 +692,7 @@ export class AutoGraderPipelineService {
         parsedContent,
         failure: null
       });
+      this.store.clearReviewDraft(submissionId);
 
       return {
         ok: true,

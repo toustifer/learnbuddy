@@ -90,6 +90,8 @@ async function startTestServer() {
     get: (p, headers) => makeHttpRequest(port, "GET", p, headers, null),
     post: (p, body, headers = {}) =>
       makeHttpRequest(port, "POST", p, { "Content-Type": "application/json", ...headers }, body),
+    put: (p, body, headers = {}) =>
+      makeHttpRequest(port, "PUT", p, { "Content-Type": "application/json", ...headers }, body),
     delete: (p, headers = {}) => makeHttpRequest(port, "DELETE", p, headers, null),
     close: async () => {
       await new Promise((resolve) => server.close(resolve));
@@ -312,6 +314,59 @@ test("批注·删除 - 任课教师可删除自己的课程批注，学生不能
     const removed = await t.delete(path, await t.as("t-chen"));
     assert.equal(removed.statusCode, 200);
     assert.deepEqual(t.store.getSubmission("sub-xu-os").annotations, []);
+  } finally {
+    await t.close();
+  }
+});
+
+test("评阅草稿·自动保存不改变正式成绩，版本冲突不会覆盖别的页面", async () => {
+  const t = await startTestServer();
+  try {
+    const teacher = await t.as("t-chen");
+    const student = await t.as("s-xu");
+    const path = `${BASE}/submissions/sub-xu-os/review-draft`;
+    const original = t.store.getSubmission("sub-xu-os");
+    const grades = original.grades.map((grade, index) => index === 0
+      ? { ...grade, score: 14, comment: "教师已修改评语" }
+      : grade);
+    const body = { grades, summary: "教师草稿小结", expectedVersion: 0, baseReviewVersion: 0 };
+    assert.equal((await t.get(path, student)).statusCode, 403);
+    assert.equal((await t.put(path, body, student)).statusCode, 403);
+    const first = await t.put(path, body, teacher);
+    assert.equal(first.statusCode, 200);
+    assert.equal(first.json.draft.version, 1);
+    assert.equal((await t.get(path, teacher)).json.draft.grades[0].score, 14);
+    assert.equal(t.store.getSubmission("sub-xu-os").grades[0].score, 19);
+    assert.equal(t.store.getSubmission("sub-xu-os", "s-xu").grades.length, 0);
+    assert.equal((await t.put(path, body, teacher)).statusCode, 409);
+    const second = await t.put(path, { ...body, expectedVersion: 1 }, teacher);
+    assert.equal(second.statusCode, 200);
+    assert.equal(second.json.draft.version, 2);
+  } finally {
+    await t.close();
+  }
+});
+
+test("评阅草稿·已发布成绩修改仍对学生隔离，确认发布后清除草稿", async () => {
+  const t = await startTestServer();
+  try {
+    const teacher = await t.as("t-chen");
+    const path = `${BASE}/submissions/sub-yi-os/review-draft`;
+    const published = t.store.getSubmission("sub-yi-os");
+    const grades = published.grades.map((grade, index) => index === 0
+      ? { ...grade, score: 18, comment: "教师重新核对" }
+      : grade);
+    const saved = await t.put(path, { grades, summary: "重新核对后的总结", expectedVersion: 0, baseReviewVersion: 1 }, teacher);
+    assert.equal(saved.statusCode, 200);
+    assert.equal(t.store.getSubmission("sub-yi-os", "s-yi").grades[0].score, 20);
+    const publish = await t.post(`${BASE}/grader/review-publish`, {
+      submissionId: "sub-yi-os", grades: saved.json.draft.grades,
+      summary: saved.json.draft.summary, strictRange: true
+    }, teacher);
+    assert.equal(publish.statusCode, 200);
+    assert.equal(t.store.getSubmission("sub-yi-os", "s-yi").grades[0].score, 18);
+    assert.equal((await t.get(path, teacher)).json.draft, null);
+    assert.equal((await t.put(path, { grades, summary: "过期请求", expectedVersion: 0, baseReviewVersion: 1 }, teacher)).statusCode, 409);
   } finally {
     await t.close();
   }

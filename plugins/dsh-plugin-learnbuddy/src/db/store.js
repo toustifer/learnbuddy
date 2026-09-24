@@ -728,6 +728,56 @@ export class DatabaseStore {
     return stmt.all().map(mapSubmission);
   }
 
+  getReviewDraft(submissionId) {
+    const row = this.db.prepare("SELECT * FROM review_drafts WHERE submission_id = ?").get(submissionId);
+    if (!row) return null;
+    return {
+      submissionId: row.submission_id,
+      teacherId: row.teacher_id,
+      grades: JSON.parse(row.grades),
+      summary: row.summary,
+      version: row.version,
+      baseReviewVersion: row.base_review_version,
+      updatedAt: row.updated_at
+    };
+  }
+
+  saveReviewDraft(submissionId, teacherId, grades, summary, expectedVersion, baseReviewVersion) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const submission = this.getSubmission(submissionId);
+      if (!submission || submission.history.length !== baseReviewVersion) {
+        const error = new Error("正式成绩已更新，请刷新后再编辑草稿。");
+        error.code = "DRAFT_CONFLICT";
+        throw error;
+      }
+      const current = this.getReviewDraft(submissionId);
+      if ((current?.version || 0) !== expectedVersion) {
+        const error = new Error("这份草稿已在其他页面更新，请刷新后再编辑。");
+        error.code = "DRAFT_CONFLICT";
+        throw error;
+      }
+      const version = expectedVersion + 1;
+      const updatedAt = new Date().toISOString();
+      if (current) {
+        this.db.prepare(`UPDATE review_drafts SET teacher_id = ?, grades = ?, summary = ?, version = ?, base_review_version = ?, updated_at = ? WHERE submission_id = ?`)
+          .run(teacherId, JSON.stringify(grades), summary, version, baseReviewVersion, updatedAt, submissionId);
+      } else {
+        this.db.prepare(`INSERT INTO review_drafts (submission_id, teacher_id, grades, summary, version, base_review_version, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+          .run(submissionId, teacherId, JSON.stringify(grades), summary, version, baseReviewVersion, updatedAt);
+      }
+      this.db.exec("COMMIT");
+      return this.getReviewDraft(submissionId);
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  clearReviewDraft(submissionId) {
+    this.db.prepare("DELETE FROM review_drafts WHERE submission_id = ?").run(submissionId);
+  }
+
   updateSubmission(id, patch) {
     const existing = this.getSubmission(id);
     if (!existing) return null;

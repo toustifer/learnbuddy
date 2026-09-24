@@ -133,6 +133,17 @@ CREATE TABLE IF NOT EXISTS submissions (
   FOREIGN KEY (student_id) REFERENCES users(id)
 );
 
+CREATE TABLE IF NOT EXISTS review_drafts (
+  submission_id TEXT PRIMARY KEY,
+  teacher_id TEXT NOT NULL,
+  grades TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  version INTEGER NOT NULL DEFAULT 1,
+  base_review_version INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (submission_id) REFERENCES submissions(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_enrollments_student ON enrollments(student_id);
 CREATE INDEX IF NOT EXISTS idx_materials_course ON materials(course_id);
 CREATE INDEX IF NOT EXISTS idx_materials_owner ON materials(owner_id);

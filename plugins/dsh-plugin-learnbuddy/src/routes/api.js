@@ -1126,6 +1126,64 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
       }
     }
 
+    // 教师草稿单独存储，尤其是已发布成绩的再次修改，不能在再次发布前透给学生。
+    const reviewDraftMatch = pathname.match(/^\/api\/learnbuddy\/submissions\/([^/]+)\/review-draft$/);
+    if (reviewDraftMatch && (req.method === "GET" || req.method === "PUT")) {
+      const submissionId = decodeURIComponent(reviewDraftMatch[1]);
+      const draftAuth = requireActor(req);
+      if (!draftAuth.ok) return sendJson(res, draftAuth.status, { ok: false, error: draftAuth.error });
+      if (!store.getSubmission(submissionId, draftAuth.user.id)) {
+        return sendJson(res, 404, { ok: false, error: "提交记录不存在" });
+      }
+      if (draftAuth.user.role !== "teacher") {
+        return sendJson(res, 403, { ok: false, error: "只有任课教师可以查看或保存评阅草稿" });
+      }
+      const submission = store.getSubmission(submissionId);
+      if (req.method === "GET") {
+        return sendJson(res, 200, { ok: true, submissionId, draft: store.getReviewDraft(submissionId) });
+      }
+      if (submission.status === "grading") {
+        return sendJson(res, 409, { ok: false, error: "报告正在评阅中，请等待完成后再修改" });
+      }
+      const body = await parseJsonBody(req);
+      const assignment = store.getAssignment(submission.assignmentId);
+      const rubric = assignment?.rubric || [];
+      const baseGrades = submission.grades || [];
+      if (!rubric.length || baseGrades.length !== rubric.length) {
+        return sendJson(res, 400, { ok: false, error: "请先完成 AI 辅助评阅，再保存复核草稿" });
+      }
+      if (!Number.isInteger(body.expectedVersion) || body.expectedVersion < 0 ||
+          !Number.isInteger(body.baseReviewVersion) || body.baseReviewVersion < 0 ||
+          !Array.isArray(body.grades) || body.grades.length !== rubric.length ||
+          typeof body.summary !== "string" || body.summary.length > 12000) {
+        return sendJson(res, 400, { ok: false, error: "评阅草稿格式不正确" });
+      }
+      const incoming = new Map(body.grades.map((grade) => [grade?.rubricId, grade]));
+      if (incoming.size !== rubric.length || rubric.some((item) => {
+        const grade = incoming.get(item.id);
+        return !grade || typeof grade.score !== "number" || !Number.isFinite(grade.score) ||
+          grade.score < 0 || grade.score > item.max ||
+          typeof grade.comment !== "string" || grade.comment.length > 6000;
+      })) {
+        return sendJson(res, 400, { ok: false, error: "评分项与作业标准不一致，或分数、评语超出范围" });
+      }
+      const grades = baseGrades.map((base) => {
+        const changed = incoming.get(base.rubricId);
+        return { ...base, score: changed.score, comment: changed.comment };
+      });
+      try {
+        const draft = store.saveReviewDraft(
+          submissionId, draftAuth.user.id, grades, body.summary,
+          body.expectedVersion, body.baseReviewVersion
+        );
+        return sendJson(res, 200, { ok: true, submissionId, draft });
+      } catch (error) {
+        return sendJson(res, error.code === "DRAFT_CONFLICT" ? 409 : 500, {
+          ok: false, error: error.message
+        });
+      }
+    }
+
     // ==========================================
     // 7.8 提交报告批注 (Annotations CRUD)
     //     GET  /api/learnbuddy/submissions/:id/annotations
