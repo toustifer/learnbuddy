@@ -54,6 +54,8 @@ export interface Material {
   parseStatus?: "parsed" | "pending" | "failed";
   parseErrorCode?: string;
   parseError?: string;
+  duplicate?: boolean;
+  message?: string;
 }
 export interface Rubric {
   id: string;

@@ -503,7 +503,10 @@ test("(c) 重新解析成功：陈旧错误被清空（重新上传/更新的成
   assert.equal(created.parseError, undefined);
 
   // 3) 反向保护：失败仍然如实记录（清空逻辑没有把失败一起吞掉）
-  const stillFailed = await uploadBrokenPdf(port, { fileName: "broken-again.pdf" });
+  const stillFailed = await uploadBrokenPdf(port, {
+    fileName: "broken-again.pdf",
+    content: Buffer.from(buildCorruptPdf().toString() + "\n% corrupt-variant\n").toString("base64")
+  });
   assert.equal(store.getMaterialById(stillFailed.material.id).parseStatus, "failed");
   assert.equal(store.getMaterialById(stillFailed.material.id).parseErrorCode, "malformed");
 });

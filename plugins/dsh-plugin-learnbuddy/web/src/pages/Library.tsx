@@ -52,7 +52,7 @@ export function UploadMaterial({
   const [saving, setSaving] = useState(false);
   const [drag, setDrag] = useState(false);
   const [fileProgress, setFileProgress] = useState<
-    Record<string, { status: "pending" | "uploading" | "done" | "error"; progress: number }>
+    Record<string, { status: "pending" | "uploading" | "done" | "duplicate" | "error"; progress: number }>
   >({});
   const input = useRef<HTMLInputElement>(null);
 
@@ -75,7 +75,7 @@ export function UploadMaterial({
     setError("");
 
     // 初始化所有文件状态
-    const initialProg: Record<string, { status: "pending" | "uploading" | "done" | "error"; progress: number }> = {};
+    const initialProg: Record<string, { status: "pending" | "uploading" | "done" | "duplicate" | "error"; progress: number }> = {};
     files.forEach((f) => {
       initialProg[f.name] = { status: "pending", progress: 0 };
     });
@@ -84,6 +84,7 @@ export function UploadMaterial({
     try {
       if (LIVE_MODE) {
         let count = 0;
+        let dupCount = 0;
         try {
           for (const file of files) {
             setFileProgress((prev) => ({
@@ -104,13 +105,21 @@ export function UploadMaterial({
             }, 180);
 
             try {
-              await uploadMaterial(file, user!, target, visibility);
+              const res = await uploadMaterial(file, user!, target, visibility);
               clearInterval(timer);
-              setFileProgress((prev) => ({
-                ...prev,
-                [file.name]: { status: "done", progress: 100 },
-              }));
-              count++;
+              if (res.duplicate) {
+                dupCount++;
+                setFileProgress((prev) => ({
+                  ...prev,
+                  [file.name]: { status: "duplicate", progress: 100 },
+                }));
+              } else {
+                count++;
+                setFileProgress((prev) => ({
+                  ...prev,
+                  [file.name]: { status: "done", progress: 100 },
+                }));
+              }
             } catch (uploadErr) {
               clearInterval(timer);
               setFileProgress((prev) => ({
@@ -123,7 +132,17 @@ export function UploadMaterial({
         } finally {
           await refreshMaterials();
         }
-        notify(`已上传 ${count} 份资料，请查看各文件的解析状态。`);
+        if (count > 0 && dupCount > 0) {
+          notify(`新增上传 ${count} 份资料；另有 ${dupCount} 份资料已在本课程中，未重复添加。`);
+        } else if (dupCount > 0) {
+          notify(
+            files.length === 1
+              ? "这份资料已在本课程中，未重复添加"
+              : `所选 ${dupCount} 份资料已在本课程中，未重复添加`,
+          );
+        } else {
+          notify(`已上传 ${count} 份资料，请查看各文件的解析状态。`);
+        }
         onUploaded?.(target, visibility);
         setTimeout(() => {
           onClose();
@@ -226,12 +245,33 @@ export function UploadMaterial({
             return (
               <div key={i} className="upload-item">
                 <FileIcon kind={f.name.split(".").pop()!.toUpperCase()} />
-                <span title={f.name}>{f.name}</span>
+                <span title={f.name}>
+                  {f.name}
+                  {prog?.status === "duplicate" && (
+                    <span style={{ marginLeft: 6, color: "#eab308", fontSize: "12px", fontWeight: "normal" }}>
+                      （已存在，未重复添加）
+                    </span>
+                  )}
+                </span>
                 <small>{formatFileSize(f.size)}</small>
                 {prog && (
-                  <div className="upload-progress-wrapper" title={prog.status === "done" ? "上传完成" : prog.status === "error" ? "上传失败" : `上传中 ${prog.progress}%`}>
-                    {prog.status === "done" ? (
-                      <CheckCircle2 size={16} className="progress-done-icon" />
+                  <div
+                    className="upload-progress-wrapper"
+                    title={
+                      prog.status === "duplicate"
+                        ? "已在本课程中，未重复添加"
+                        : prog.status === "done"
+                        ? "上传完成"
+                        : prog.status === "error"
+                        ? "上传失败"
+                        : `上传中 ${prog.progress}%`
+                    }
+                  >
+                    {prog.status === "done" || prog.status === "duplicate" ? (
+                      <CheckCircle2
+                        size={16}
+                        className={prog.status === "duplicate" ? "progress-done-icon text-amber-500" : "progress-done-icon"}
+                      />
                     ) : prog.status === "error" ? (
                       <AlertCircle size={16} className="progress-error-icon" />
                     ) : (

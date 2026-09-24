@@ -238,12 +238,16 @@ export async function uploadMaterial(
     parseStatus?: Material["parseStatus"];
     parseErrorCode?: string;
     parseError?: string;
+    duplicate?: boolean;
+    message?: string;
   }>("/materials/upload", { method: "POST", body }, 120000);
   return {
     ...data.material,
     parseStatus: data.parseStatus ?? data.material.parseStatus,
     parseErrorCode: data.parseErrorCode ?? data.material.parseErrorCode,
     parseError: data.parseError ?? data.material.parseError,
+    duplicate: data.duplicate ?? false,
+    message: data.message,
   };
 }
 export interface AskResult {

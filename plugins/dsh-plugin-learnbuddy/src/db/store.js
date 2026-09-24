@@ -361,6 +361,18 @@ export class DatabaseStore {
   // Materials & Permission Filtering
   // ==========================================
 
+  findMaterialByBlob(courseId, ownerId, blobId) {
+    if (!courseId || !ownerId || !blobId) return null;
+    const stmt = this.db.prepare(`
+      SELECT * FROM materials
+      WHERE course_id = ? AND owner_id = ? AND blob_id = ?
+      ORDER BY rowid ASC
+      LIMIT 1
+    `);
+    const row = stmt.get(courseId, ownerId, blobId);
+    return row ? mapMaterial(row) : null;
+  }
+
   createMaterial(material) {
     const stmt = this.db.prepare(`
       INSERT INTO materials (

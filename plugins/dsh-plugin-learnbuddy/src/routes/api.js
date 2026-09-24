@@ -536,8 +536,41 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
             : (url.searchParams.get("filename") || "uploaded.pdf");
         }
 
+        // 身份绑定：若携带合法令牌，以登录用户为准；无令牌时兼容测试环境表单传参
+        const bearer = readBearerToken(req);
+        if (bearer) {
+          const auth = requireActor(req);
+          if (!auth.ok) {
+            return sendJson(res, auth.status, { ok: false, error: auth.error });
+          }
+          ownerId = auth.user.id;
+        }
+
         // 1. 物理安全落盘 (包含格式白名单与 20MB 校验)
         const savedFile = await storage.saveFile(fileBuffer, fileName);
+
+        // 幂等查重：按 (courseId, ownerId, blobId) 检查本课程是否已有该用户上传的相同文件
+        const existingMaterial = store.findMaterialByBlob(courseId, ownerId, savedFile.fileId);
+        if (existingMaterial) {
+          return sendJson(res, 200, {
+            ok: true,
+            duplicate: true,
+            message: "这份资料已在本课程中，未重复添加",
+            material: existingMaterial,
+            parseStatus: existingMaterial.parseStatus,
+            parseError: existingMaterial.parseError || null,
+            parseErrorCode: existingMaterial.parseErrorCode || null,
+            file: {
+              id: savedFile.fileId,
+              name: savedFile.originalName,
+              size: savedFile.size,
+              sizeFormatted: savedFile.sizeFormatted,
+              hash: savedFile.hash,
+              viewUrl: `/api/learnbuddy/files/${savedFile.fileId}/view`,
+              downloadUrl: `/api/learnbuddy/files/${savedFile.fileId}/download`
+            }
+          });
+        }
 
         // 2. 知识点抽取与多模态解析
         //    task-14：解析失败时 parseAndExtract 返回 status:"failed" + errorCode，
@@ -571,6 +604,7 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
 
         return sendJson(res, 200, {
           ok: true,
+          duplicate: false,
           material: createdMaterial,
           parseStatus: parsed.status,
           parseError: parsed.error || null,
