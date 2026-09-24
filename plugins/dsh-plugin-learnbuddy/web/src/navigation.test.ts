@@ -14,6 +14,12 @@ describe("course navigation", () => {
     expect(courseForRoute(parseRoute("#assignments/network"), freshState())).toBe("network");
     expect(courseForRoute(parseRoute("#assignments"), freshState())).toBe("all");
   });
+  it("deep-links a teacher to one report and retains the assignment context", () => {
+    const route = { page: "grading" as const, id: "lab-os", submissionId: "sub-yi-os" };
+    expect(routeHash(route)).toBe("#grading/lab-os/sub-yi-os");
+    expect(parseRoute(routeHash(route))).toEqual(route);
+    expect(courseForRoute(route, freshState())).toBe("os");
+  });
   it("derives a material or feedback course from its actual record", () => {
     const state = freshState();
     expect(courseForRoute({ page: "material", id: "mat-tcp" }, state)).toBe("network");

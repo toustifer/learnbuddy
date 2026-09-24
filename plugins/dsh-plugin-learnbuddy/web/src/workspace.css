@@ -78,6 +78,48 @@
 .review-action:disabled { opacity:.45; cursor:not-allowed; }
 .report-open-action { min-height:34px; padding:6px 12px; }
 .review-register .selected-row .report-open-action { background:#dceee2; border-color:#9fc9ad; }
+
+/* The report is a full-width work surface; the class roster remains on the assignment overview. */
+.review-focus-shell .sidebar,.review-focus-shell .topbar { display:none; }
+.review-focus-shell .app-content { width:100%; }
+.review-focus-main { overflow:hidden; background:#f7f9f7; }
+.review-focus-page { width:100%; max-width:none; height:100%; padding:0 18px 18px; display:flex; flex-direction:column; gap:12px; animation:none; }
+.review-focus-header { display:flex; align-items:center; gap:20px; min-height:78px; margin:0 -18px; padding:10px 20px; background:#fff; border-bottom:1px solid var(--line); }
+.review-focus-back { display:inline-flex; align-items:center; gap:6px; padding:8px 10px; color:#2c684d; font-size:12px; font-weight:600; white-space:nowrap; border-radius:6px; }
+.review-focus-back:hover,.review-focus-stepper button:hover:not(:disabled) { background:#edf4ef; }
+.review-focus-identity { flex:1; min-width:0; }
+.review-focus-identity > span { display:block; font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.review-focus-identity h1 { margin:2px 0; font-size:18px; line-height:1.4; font-weight:650; color:#263d30; }
+.review-focus-identity small { display:block; color:#829087; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.review-focus-controls { display:flex; align-items:center; gap:10px; flex-shrink:0; }
+.review-draft-status { font-size:11px; color:#43765b; white-space:nowrap; }
+.review-draft-status.dirty,.review-draft-status.saving,.review-draft-status.loading { color:#977441; }
+.review-draft-status.error { color:#b14f49; }
+.review-focus-stepper { display:inline-flex; align-items:center; gap:5px; border-left:1px solid var(--line); padding-left:10px; font-size:11px; color:var(--muted); white-space:nowrap; }
+.review-focus-stepper button { padding:6px 8px; border-radius:5px; color:#386c50; }
+.review-focus-stepper button:disabled { opacity:.4; cursor:not-allowed; }
+.review-focus-page .online-actions { margin:0; min-height:36px; }
+.review-focus-page .lb-review-split { flex:1; min-height:0; margin:0; grid-template-columns:minmax(0,1.4fr) minmax(420px,1fr); gap:16px; }
+.review-focus-page .review-reader-column,.review-focus-page .review-panel-column { position:static; height:100%; min-height:0; }
+.review-focus-page .review-reader-column { display:flex; flex-direction:column; }
+.review-focus-page .lb-reader { flex:1; min-height:0; height:100%; }
+.review-focus-page .lb-reader-scroll { min-height:0; max-height:none; }
+.review-focus-page .lb-panel { height:100%; }
+.review-draft-error { margin:0; }
+.lb-summary-editor textarea { display:block; width:100%; min-height:96px; padding:11px 13px; border:1px solid var(--line); border-radius:9px; background:#fff; color:#384940; font-size:12px; line-height:1.8; overflow:hidden; resize:none; overflow-wrap:anywhere; }
+.lb-summary-editor textarea:focus { outline:2px solid #cfe0cb; outline-offset:-1px; }
+.lb-review-consistency { margin:0 0 9px!important; padding:8px 10px!important; background:#fff8ea!important; border-color:#f1dfb9!important; color:#906d35!important; font-size:11px!important; }
+@media (max-width:900px) {
+  .review-focus-main { overflow:auto; }
+  .review-focus-page { height:auto; min-height:100%; padding:0 12px 20px; }
+  .review-focus-header { margin:0 -12px; padding:10px 14px; flex-wrap:wrap; gap:8px 14px; }
+  .review-focus-controls { width:100%; justify-content:space-between; }
+  .review-focus-page .lb-review-split { display:flex; flex-direction:column; }
+  .review-focus-page .review-reader-column,.review-focus-page .review-panel-column { width:100%; height:auto; }
+  .review-focus-page .lb-reader { height:68vh; min-height:460px; }
+  .review-focus-page .lb-panel { height:auto; }
+  .review-focus-page .lb-panel-scroll { overflow:visible; }
+}
 .state-label { display:inline-flex; align-items:center; gap:5px; font-size:10px; padding:3px 7px; border-radius:4px; white-space:nowrap; font-weight:450; }
 .state-label.success { background:#eaf3ec; color:#427956; }
 .state-label.pending { background:#faf2e4; color:#a1854b; }

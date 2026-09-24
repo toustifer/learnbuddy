@@ -1,9 +1,14 @@
 import type { DemoState, Route } from "./types";
 
 export function parseRoute(hash: string): Route {
-  const [page, value] = hash.replace(/^#/, "").split("/");
+  const [page, value, submissionValue] = hash.replace(/^#/, "").split("/");
   let id = "";
-  try { id = decodeURIComponent(value || ""); } catch { return { page: "home" }; }
+  let submissionId = "";
+  try {
+    id = decodeURIComponent(value || "");
+    submissionId = decodeURIComponent(submissionValue || "");
+  } catch { return { page: "home" }; }
+  if (page === "grading" && id) return { page, id, ...(submissionId ? { submissionId } : {}) };
   if (["course", "material", "assignment", "grading", "report"].includes(page) && id)
     return { page, id } as Route;
   if (page === "assignments" || page === "insights") return { page, courseId: id || "all" };
@@ -12,7 +17,8 @@ export function parseRoute(hash: string): Route {
 }
 export function routeHash(route: Route) {
   const id = "id" in route ? route.id : (route.page === "assignments" || route.page === "insights") && route.courseId !== "all" ? route.courseId : undefined;
-  return `#${route.page}${id ? "/" + encodeURIComponent(id) : ""}`;
+  const suffix = route.page === "grading" && route.submissionId ? "/" + encodeURIComponent(route.submissionId) : "";
+  return `#${route.page}${id ? "/" + encodeURIComponent(id) : ""}${suffix}`;
 }
 export function courseForRoute(route: Route, state: DemoState): string | undefined {
   if (route.page === "course") return route.id;

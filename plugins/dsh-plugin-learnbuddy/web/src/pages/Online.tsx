@@ -143,6 +143,16 @@ interface StoredAnnotation {
   createdAt: string;
 }
 
+interface StoredReviewDraft {
+  submissionId: string;
+  grades: ServerGrade[];
+  summary: string;
+  version: number;
+  baseReviewVersion: number;
+  updatedAt: string;
+}
+type DraftStatus = "loading" | "saved" | "dirty" | "saving" | "error";
+
 function toReportAnnotation(annotation: StoredAnnotation): ReportAnnotation {
   const createdAt = new Date(annotation.createdAt);
   return {
@@ -158,7 +168,8 @@ function toReportAnnotation(annotation: StoredAnnotation): ReportAnnotation {
   };
 }
 
-export function OnlineGrading({ id }: { id: string }) {
+export function OnlineGrading({ id, submissionId }: { id: string; submissionId?: string }) {
+  const focusMode = Boolean(submissionId);
   const {
     state,
     user,
@@ -179,6 +190,7 @@ export function OnlineGrading({ id }: { id: string }) {
   const members = academic?.roster.filter((r) => r.courseId === assignment?.courseId) || [];
   const submissions = state.submissions.filter((s) => s.assignmentId === id);
   const [selected, setSelected] = useState(() => {
+    if (submissionId) return submissionId;
     try {
       const previous = JSON.parse(sessionStorage.getItem("learnbuddy-review-selection") || "null");
       if (previous?.assignmentId === id && submissions.some((s) => s.id === previous.submissionId)) return previous.submissionId as string;
@@ -219,6 +231,16 @@ export function OnlineGrading({ id }: { id: string }) {
   // current 必须在使用它的 useEffect 之前声明，
   // 否则依赖数组里的引用会触发 TDZ（Cannot access 'current' before initialization）
   const current = reviews[selected];
+  const reviewRef = useRef<ServerReview | null>(current || null);
+  reviewRef.current = current || reviewRef.current;
+  const draftVersion = useRef(0);
+  const draftBaseReviewVersion = useRef(0);
+  const draftReady = useRef(false);
+  const editSequence = useRef(0);
+  const savedSequence = useRef(0);
+  const savePromise = useRef<Promise<boolean> | null>(null);
+  const [draftStatus, setDraftStatus] = useState<DraftStatus>(focusMode ? "loading" : "saved");
+  const [draftError, setDraftError] = useState("");
   useEffect(() => {
     // 有评分、或有持久化的解析产物，都应建立 review 视图：
     // 解析与评分是两件事，模型不可用时教师仍应能看到报告内容
@@ -234,6 +256,69 @@ export function OnlineGrading({ id }: { id: string }) {
       } }));
     }
   }, [selected, saved, reviews, setReviews, assignment]);
+
+  useEffect(() => {
+    if (!focusMode || !saved || !assignment) return;
+    let cancelled = false;
+    draftReady.current = false;
+    setDraftStatus("loading");
+    setDraftError("");
+    void request<{ draft: StoredReviewDraft | null }>(
+      `/submissions/${encodeURIComponent(selected)}/review-draft`,
+    ).then(({ draft }) => {
+      if (cancelled) return;
+      const baseVersion = saved.history?.length || 0;
+      if (draft && draft.baseReviewVersion !== baseVersion) {
+        throw new Error("正式成绩已更新，请刷新页面后再评阅。");
+      }
+      draftVersion.current = draft?.version || 0;
+      draftBaseReviewVersion.current = baseVersion;
+      if (draft) {
+        setReviews((previous) => {
+          const base = previous[selected] || {
+            submissionId: selected,
+            status: saved.status,
+            totalScore: scoreOf(saved) || 0,
+            maxScore: assignment.rubric.reduce((sum, item) => sum + item.max, 0),
+            grades: saved.grades as ServerGrade[],
+            summary: saved.summary,
+            parsedContent: saved.parsedContent ?? null,
+          };
+          const next: ServerReview = {
+            ...base,
+            grades: draft.grades,
+            summary: draft.summary,
+            totalScore: Math.round(draft.grades.reduce((sum, grade) => sum + grade.score, 0) * 100) / 100,
+          };
+          reviewRef.current = next;
+          return { ...previous, [selected]: next };
+        });
+      }
+      draftReady.current = true;
+      setDraftStatus("saved");
+    }).catch((cause) => {
+      if (cancelled) return;
+      setDraftStatus("error");
+      setDraftError((cause as Error).message);
+    });
+    return () => { cancelled = true; };
+  }, [focusMode, selected, saved?.id, assignment?.id]);
+
+  useEffect(() => {
+    if (!focusMode || draftStatus !== "dirty") return;
+    const timer = window.setTimeout(() => { void persistDraft(); }, 800);
+    return () => window.clearTimeout(timer);
+  }, [focusMode, draftStatus, current?.grades, current?.summary]);
+
+  useEffect(() => {
+    if (!focusMode || (draftStatus !== "dirty" && draftStatus !== "saving" && draftStatus !== "error")) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [focusMode, draftStatus]);
 
   // 评分数据刷新时只更新正文；教师批注和证据定位属于当前报告的编辑状态。
   useEffect(() => {
@@ -297,9 +382,13 @@ export function OnlineGrading({ id }: { id: string }) {
           setBatch(result);
           setConfirmBatch(false);
         } else {
+          if (action === "review-publish" && focusMode && !await persistDraft()) {
+            throw new Error("草稿未保存成功，请先重试保存，再发布成绩。");
+          }
+          const reviewToPublish = reviewRef.current || current;
           if (
             action === "review-publish" &&
-            (!current || !validateServerGrades(current.grades, rubric))
+            (!reviewToPublish || !validateServerGrades(reviewToPublish.grades, rubric))
           )
             throw new Error("请按作业评分标准补齐全部有效分数。");
           const body =
@@ -307,8 +396,8 @@ export function OnlineGrading({ id }: { id: string }) {
               ? {
                   submissionId: selected,
                   teacherId: user!.id,
-                  grades: current.grades,
-                  summary: current.summary,
+                  grades: reviewToPublish!.grades,
+                  summary: reviewToPublish!.summary,
                   strictRange: true,
                 }
               : { submissionId: selected, options: { strictLLM: true } };
@@ -326,7 +415,16 @@ export function OnlineGrading({ id }: { id: string }) {
             throw new Error(
               "服务未返回完整评分明细；请让维护人员核对状态后再操作。",
             );
+          reviewRef.current = result;
           setReviews((previous) => ({ ...previous, [selected]: result }));
+          if (action === "review-publish" || action === "grade-submission" || action === "retry") {
+            draftVersion.current = 0;
+            draftBaseReviewVersion.current = action === "review-publish"
+              ? result.reviewVersion || draftBaseReviewVersion.current + 1
+              : draftBaseReviewVersion.current;
+            savedSequence.current = editSequence.current;
+            setDraftStatus("saved");
+          }
           setConfirmPublish(false);
         }
         query.retry();
@@ -342,11 +440,69 @@ export function OnlineGrading({ id }: { id: string }) {
       }
     });
   }
+  function persistDraft(): Promise<boolean> {
+    if (!focusMode || editSequence.current <= savedSequence.current) return Promise.resolve(true);
+    if (!draftReady.current) return Promise.resolve(false);
+    if (savePromise.current) return savePromise.current;
+    const operation = (async () => {
+      while (editSequence.current > savedSequence.current) {
+        const review = reviewRef.current;
+        if (!review || !validateServerGrades(review.grades, rubric)) {
+          setDraftError("请先补齐有效分数，再保存草稿。");
+          setDraftStatus("error");
+          return false;
+        }
+        const sequence = editSequence.current;
+        setDraftStatus("saving");
+        try {
+          const result = await request<{ draft: StoredReviewDraft }>(
+            `/submissions/${encodeURIComponent(selected)}/review-draft`,
+            {
+              method: "PUT",
+              body: JSON.stringify({
+                grades: review.grades,
+                summary: review.summary,
+                expectedVersion: draftVersion.current,
+                baseReviewVersion: draftBaseReviewVersion.current,
+              }),
+            },
+          );
+          draftVersion.current = result.draft.version;
+          savedSequence.current = sequence;
+          setDraftError("");
+        } catch (cause) {
+          setDraftError((cause as Error).message);
+          setDraftStatus("error");
+          return false;
+        }
+      }
+      setDraftStatus("saved");
+      return true;
+    })();
+    savePromise.current = operation;
+    void operation.finally(() => {
+      if (savePromise.current === operation) savePromise.current = null;
+    });
+    return operation;
+  }
+  async function navigateAfterSave(nextSubmissionId?: string) {
+    if (!await persistDraft()) return;
+    go(nextSubmissionId ? { page: "grading", id, submissionId: nextSubmissionId } : { page: "grading", id });
+  }
+  function editReview(change: (review: ServerReview) => ServerReview) {
+    const base = reviewRef.current || current;
+    if (!base || (focusMode && !draftReady.current)) return;
+    const next = change(base);
+    reviewRef.current = next;
+    setReviews((previous) => ({ ...previous, [selected]: next }));
+    if (focusMode) {
+      editSequence.current += 1;
+      setDraftStatus("dirty");
+      setDraftError("");
+    }
+  }
   function patchGrade(index: number, patch: Partial<ServerGrade>) {
-    setReviews((previous) => previous[selected] ? ({
-      ...previous,
-      [selected]: updateReviewGrade(previous[selected], index, patch),
-    }) : previous);
+    editReview((review) => updateReviewGrade(review, index, patch));
   }
   async function addAnnotation(annotation: Omit<ReportAnnotation, "id" | "createdAt">) {
     const submissionId = selected;
@@ -377,8 +533,40 @@ export function OnlineGrading({ id }: { id: string }) {
       if (selectedRef.current === submissionId) setError(`批注删除失败：${(cause as Error).message}`);
     }
   }
+  const reportQueue = members
+    .map(({ student }) => ({ student, submission: latestSubmission(submissions, id, student.id) }))
+    .filter((entry) => Boolean(entry.submission));
+  const queueIndex = reportQueue.findIndex((entry) => entry.submission?.id === selected);
+  const selectedStudent = reportQueue[queueIndex]?.student;
+  const reviewChanged = Boolean(current && saved && (
+    current.summary !== saved.summary || current.grades.some((grade) => {
+      const original = saved.grades.find((item) => item.rubricId === grade.rubricId);
+      return !original || original.score !== grade.score || original.comment !== grade.comment;
+    })
+  ));
   return (
-    <div className="page online-grading">
+    <div className={`page online-grading${focusMode ? " review-focus-page" : ""}`}>
+      {focusMode ? (
+        <div className="review-focus-header">
+          <button className="review-focus-back" onClick={() => void navigateAfterSave()}><ArrowLeft size={17} />返回学生列表</button>
+          <div className="review-focus-identity">
+            <span>{assignment.title}</span>
+            <h1>{selectedStudent?.name || "学生"}的报告</h1>
+            <small title={saved?.fileName}>{saved?.fileName || "正在读取报告…"}</small>
+          </div>
+          <div className="review-focus-controls">
+            <span className={`review-draft-status ${draftStatus}`} role="status">
+              {draftStatus === "loading" ? "读取草稿…" : draftStatus === "saving" ? "正在保存…" : draftStatus === "dirty" ? "待保存" : draftStatus === "error" ? "保存失败" : "草稿已保存"}
+            </span>
+            {draftStatus === "error" && <button className="text-button" onClick={() => draftReady.current ? void persistDraft() : location.reload()}>重试</button>}
+            <div className="review-focus-stepper">
+              <button disabled={queueIndex <= 0} onClick={() => void navigateAfterSave(reportQueue[queueIndex - 1]?.submission?.id)} aria-label="上一份报告">上一份</button>
+              <span>{queueIndex >= 0 ? queueIndex + 1 : 0} / {reportQueue.length}</span>
+              <button disabled={queueIndex < 0 || queueIndex >= reportQueue.length - 1} onClick={() => void navigateAfterSave(reportQueue[queueIndex + 1]?.submission?.id)} aria-label="下一份报告">下一份</button>
+            </div>
+          </div>
+        </div>
+      ) : <>
       <button
         className="text-button"
         onClick={() => go({ page: "assignments" })}
@@ -415,11 +603,15 @@ export function OnlineGrading({ id }: { id: string }) {
         </div>
         <div className="table-scroll"><table className="data-table"><thead><tr><th>学生</th><th>提交文件</th><th>提交时间</th><th>状态</th><th className="numeric">分数</th><th>操作</th></tr></thead><tbody>
           {members.map(({ student }) => ({ student, submission: latestSubmission(submissions, id, student.id) })).filter(({ student, submission }) => student.name.includes(studentSearch) && (studentFilter === "all" || (studentFilter === "missing" ? !submission : submission?.status === studentFilter))).map(({ student, submission }) => <tr key={student.id} className={submission?.id === selected ? "selected-row" : ""}>
-            <td><strong>{student.name}</strong><small>{student.username}</small></td><td>{submission?.fileName || "—"}{submission?.sampleKey && <small>教学样例</small>}{submission?.fileName.startsWith("本地测试 ·") && <small>本地测试报告</small>}</td><td className="cell-muted">{submission ? dateLabel(submission.submittedAt) : "—"}</td><td><SubmissionStatus teacher submission={submission && reviews[submission.id] ? { ...submission, status: reviews[submission.id].status as typeof submission.status } : submission} /></td><td className="numeric">{submission ? reviews[submission.id]?.totalScore ?? scoreOf(submission) ?? "—" : "—"}</td><td><button className="review-action report-open-action" disabled={!submission || isBusy} onClick={() => { setSelected(submission!.id); setError(""); setConfirmPublish(false); }}><FileText size={14} />查看报告</button></td>
+            <td><strong>{student.name}</strong><small>{student.username}</small></td><td>{submission?.fileName || "—"}{submission?.sampleKey && <small>教学样例</small>}{submission?.fileName.startsWith("本地测试 ·") && <small>本地测试报告</small>}</td><td className="cell-muted">{submission ? dateLabel(submission.submittedAt) : "—"}</td><td><SubmissionStatus teacher submission={submission && reviews[submission.id] ? { ...submission, status: reviews[submission.id].status as typeof submission.status } : submission} /></td><td className="numeric">{submission ? reviews[submission.id]?.totalScore ?? scoreOf(submission) ?? "—" : "—"}</td><td><button className="review-action report-open-action" disabled={!submission || isBusy} onClick={() => go({ page: "grading", id, submissionId: submission!.id })}><FileText size={14} />查看报告</button></td>
           </tr>)}
         </tbody></table></div>
       </div>
-      <div className="review-selection-heading"><h2>{saved ? `${members.find((r) => r.student.id === saved.studentId)?.student.name || "学生"}的报告` : "报告评阅"}</h2>{saved && <span className="muted">{saved.fileName}</span>}</div>
+      <div className="online-actions overview-batch-action">
+        <button className="button secondary" disabled={isBusy} onClick={() => setConfirmBatch((value) => !value)}>全班批量评阅</button>
+      </div>
+      </>}
+      {focusMode && <>
       <div className="online-actions">
         <button
           className="button primary"
@@ -445,15 +637,9 @@ export function OnlineGrading({ id }: { id: string }) {
         >
           重试评阅
         </button>
-        <button
-          className="text-button"
-          disabled={isBusy}
-          onClick={() => setConfirmBatch((value) => !value)}
-        >
-          全班批量评阅
-        </button>
       </div>
-      {confirmBatch && (
+      </>}
+      {!focusMode && confirmBatch && (
         <div className="parse-notice">
           <p>
             将评阅本作业全部“已提交 /
@@ -480,7 +666,8 @@ export function OnlineGrading({ id }: { id: string }) {
           {error}
         </p>
       )}
-      {batch && (
+      {focusMode && draftError && <p className="form-error review-draft-error" role="alert">草稿保存：{draftError}</p>}
+      {!focusMode && batch && (
         <div className="parse-notice">
           <strong>
             本批次：{batch.total} 份，成功 {batch.succeeded} 份，失败{" "}
@@ -494,13 +681,13 @@ export function OnlineGrading({ id }: { id: string }) {
           ))}
         </div>
       )}
-      {!current && (
+      {focusMode && !current && (
         <Empty
           title={saved ? "报告尚未评阅" : "选择一份学生报告"}
           description={saved ? "AI 辅助评阅需要已配置模型；最终分数与反馈由老师复核。" : "先从上方学生列表选择要查看的报告。"}
         />
       )}
-      {current && (
+      {focusMode && current && (
         <div className="lb-review-split">
           {/* 左侧：真实报告阅读器。只渲染后端解析产物，拿不到就显示空态 */}
           <div className="review-reader-column">
@@ -556,7 +743,9 @@ export function OnlineGrading({ id }: { id: string }) {
               maxScore={current.maxScore}
               summary={current.summary}
               isPublished={current.status === "published"}
-              isSaving={isBusy}
+              isSaving={isBusy || draftStatus === "loading" || draftStatus === "saving"}
+              editingDisabled={!draftReady.current}
+              reviewChanged={reviewChanged}
               confirmPublish={confirmPublish}
               onSetConfirmPublish={setConfirmPublish}
               onSelectGrade={(grade) => {
@@ -573,6 +762,7 @@ export function OnlineGrading({ id }: { id: string }) {
                 const index = current.grades.findIndex((g) => g.rubricId === rubricId);
                 if (index >= 0) patchGrade(index, { comment });
               }}
+              onSummaryChange={(summary) => editReview((review) => ({ ...review, summary }))}
               onConfirmGrades={() => void run("review-publish")}
             />
           </div>

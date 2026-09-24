@@ -12,8 +12,11 @@ export interface RubricEvaluationPanelProps {
   onSelectGrade: (grade: ServerGrade) => void;
   onScoreChange: (rubricId: string, score: number) => void;
   onCommentChange: (rubricId: string, comment: string) => void;
+  onSummaryChange: (summary: string) => void;
   onConfirmGrades: () => void;
   isSaving?: boolean;
+  editingDisabled?: boolean;
+  reviewChanged?: boolean;
   /** 发布前二次确认状态：Teacher-in-the-loop 需要显式确认，避免误点直接发布 */
   confirmPublish?: boolean;
   onSetConfirmPublish?: (value: boolean) => void;
@@ -25,7 +28,9 @@ const ATTENTION_LABEL: Record<string, { text: string; tone: "alert" | "warn" }> 
   needs_attention: { text: "待复核", tone: "warn" },
 };
 
-function GradeComment({ value, rubricId, onChange }: { value: string; rubricId: string; onChange: (rubricId: string, comment: string) => void }) {
+function ExpandingTextArea({ id, value, onChange, placeholder, disabled, maxLength, rows = 2 }: {
+  id?: string; value: string; onChange: (value: string) => void; placeholder: string; disabled?: boolean; maxLength: number; rows?: number;
+}) {
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
   React.useLayoutEffect(() => {
     const input = inputRef.current;
@@ -33,18 +38,14 @@ function GradeComment({ value, rubricId, onChange }: { value: string; rubricId: 
     input.style.height = "auto";
     input.style.height = `${input.scrollHeight + 2}px`;
   }, [value]);
-  return (
-    <label className="lb-comment" onClick={(event) => event.stopPropagation()}>
-      <span>评语 · 可修改</span>
-      <textarea
-        ref={inputRef}
-        value={value}
-        placeholder="填写评语……"
-        onChange={(event) => onChange(rubricId, event.target.value)}
-        rows={2}
-      />
-    </label>
-  );
+  return <textarea id={id} ref={inputRef} value={value} placeholder={placeholder} disabled={disabled} maxLength={maxLength} rows={rows} onChange={(event) => onChange(event.target.value)} />;
+}
+
+function GradeComment({ value, rubricId, onChange, disabled }: { value: string; rubricId: string; onChange: (rubricId: string, comment: string) => void; disabled?: boolean }) {
+  return <label className="lb-comment" onClick={(event) => event.stopPropagation()}>
+    <span>评语 · 可修改</span>
+    <ExpandingTextArea value={value} placeholder="填写评语……" disabled={disabled} maxLength={6000} onChange={(comment) => onChange(rubricId, comment)} />
+  </label>;
 }
 
 export const RubricEvaluationPanel: React.FC<RubricEvaluationPanelProps> = ({
@@ -58,8 +59,11 @@ export const RubricEvaluationPanel: React.FC<RubricEvaluationPanelProps> = ({
   onSelectGrade,
   onScoreChange,
   onCommentChange,
+  onSummaryChange,
   onConfirmGrades,
   isSaving = false,
+  editingDisabled = false,
+  reviewChanged = false,
   confirmPublish = false,
   onSetConfirmPublish,
 }) => {
@@ -77,7 +81,7 @@ export const RubricEvaluationPanel: React.FC<RubricEvaluationPanelProps> = ({
 
         <div className="lb-panel-actions">
           <span className={`lb-chip${isPublished ? "" : " warn"}`}>
-            {isPublished ? "已发布" : "复核中"}
+            {isPublished ? reviewChanged ? "修改未发布" : "已发布" : "复核中"}
           </span>
           <button
             className="lb-btn primary"
@@ -124,8 +128,9 @@ export const RubricEvaluationPanel: React.FC<RubricEvaluationPanelProps> = ({
       <div className="lb-panel-scroll">
       {/* 评阅总体概述 */}
       <div className="lb-summary">
-        <div className="lb-summary-title">综合小结</div>
-        <p>{summary || "暂无小结"}</p>
+        <label className="lb-summary-title" htmlFor="review-summary">综合小结 · 可修改</label>
+        {reviewChanged && <p className="lb-review-consistency">评分或评语已修改，请核对小结与分数是否一致；文字修改不会自动改分。</p>}
+        <div className="lb-summary-editor"><ExpandingTextArea id="review-summary" value={summary} placeholder="填写综合小结……" disabled={editingDisabled} maxLength={12000} rows={4} onChange={onSummaryChange} /></div>
       </div>
 
       {/* Rubric 评分项列表 */}
@@ -170,6 +175,7 @@ export const RubricEvaluationPanel: React.FC<RubricEvaluationPanelProps> = ({
                     min={0}
                     max={g.max || 100}
                     value={g.score ?? 0}
+                    disabled={editingDisabled}
                     onChange={(e) => onScoreChange(g.rubricId, Number(e.target.value))}
                     aria-label={`${g.title || g.rubricId} 得分`}
                   />
@@ -238,7 +244,7 @@ export const RubricEvaluationPanel: React.FC<RubricEvaluationPanelProps> = ({
               )}
 
               {/* 评语编辑框 */}
-              <GradeComment value={g.comment || ""} rubricId={g.rubricId} onChange={onCommentChange} />
+              <GradeComment value={g.comment || ""} rubricId={g.rubricId} onChange={onCommentChange} disabled={editingDisabled} />
             </div>
           );
         })}

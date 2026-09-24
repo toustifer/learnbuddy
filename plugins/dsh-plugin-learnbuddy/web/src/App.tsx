@@ -240,6 +240,7 @@ function Shell() {
     setMobileOpen(false);
   }, [route]);
   if (!user) return <Login />;
+  const reviewFocus = LIVE_MODE && route.page === "grading" && Boolean(route.submissionId);
   const myCourses = visibleCourses(user);
   const navPage = ["material", "library", "courses", "course"].includes(route.page) ? "courses"
     : route.page === "home" ? "home" : route.page === "insights" ? "insights" : "assignments";
@@ -252,7 +253,7 @@ function Shell() {
     ...(user.role === "teacher" ? [{ page: "insights" as const, label: "学情分析", icon: TrendingUp }] : []),
   ];
   return (
-    <div className={`app-shell role-${user.role}`}>
+    <div className={`app-shell role-${user.role}${reviewFocus ? " review-focus-shell" : ""}`}>
       {mobileOpen && (
         <button
           className="sidebar-backdrop"
@@ -344,12 +345,12 @@ function Shell() {
           initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .18, ease: "easeOut" }}
           className={
             "main " +
-            (route.page === "material" || route.page === "report"
+            (reviewFocus ? "review-focus-main" : route.page === "material" || route.page === "report"
               ? "workspace-main"
               : "")
           }
           id="main-content"
-          key={user.id + ":" + route.page + ("id" in route ? route.id : "")}
+          key={user.id + ":" + route.page + ("id" in route ? route.id : "") + (route.page === "grading" ? route.submissionId || "" : "")}
         >
           {route.page === "home" && <HomeWorkspace />}
           {["courses", "library"].includes(route.page) && <CourseGallery />}
@@ -365,7 +366,7 @@ function Shell() {
             ))}
           {route.page === "grading" &&
             (LIVE_MODE ? (
-              <OnlineGrading id={route.id} />
+              <OnlineGrading id={route.id} submissionId={route.submissionId} />
             ) : (
               <Grading id={route.id} />
             ))}

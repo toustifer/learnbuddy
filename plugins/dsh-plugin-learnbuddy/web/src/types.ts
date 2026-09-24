@@ -138,7 +138,7 @@ export type Route =
   | { page: "material"; id: string }
   | { page: "assignments"; courseId?: string }
   | { page: "assignment"; id: string }
-  | { page: "grading"; id: string }
+  | { page: "grading"; id: string; submissionId?: string }
   | { page: "report"; id: string }
   | { page: "insights"; courseId?: string };
 export interface DocumentPage {
