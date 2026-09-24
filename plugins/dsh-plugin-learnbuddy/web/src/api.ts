@@ -28,10 +28,35 @@ export class ApiError extends Error {
  * 令牌由服务端登录接口签发；前端不再往任何请求里塞 `userId` ——
  * 之前后端信任调用方自报的 `userId`，任何人都能冒充教师拿到全班成绩。
  */
-let accessToken = "";
+/**
+ * 令牌的**持久副本**键名。
+ *
+ * 内存变量仍是唯一事实来源；localStorage 只是它的持久副本 ——
+ * 这样刷新页面后还能带着令牌换回身份（配合 `/auth/me`），而不是被踢回登录页。
+ * 隐私模式等场景下 localStorage 不可用也不会崩，退化为「本次会话内有效」。
+ *
+ * （这一点来自嘉俊那版的实现，在本次冲突解决时按「保留更好的那个」收了下来。）
+ */
+export const TOKEN_KEY = "learnbuddy-token";
+
+function readStoredToken(): string {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+let accessToken = typeof localStorage !== "undefined" ? readStoredToken() : "";
 
 export function setAccessToken(token: string) {
   accessToken = typeof token === "string" ? token : "";
+  try {
+    if (accessToken) localStorage.setItem(TOKEN_KEY, accessToken);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* 存储不可用时忽略：内存里的令牌仍然有效 */
+  }
 }
 
 export function getAccessToken() {
