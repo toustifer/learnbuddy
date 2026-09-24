@@ -43,6 +43,28 @@ if (existsSync(profileFile)) {
   profile.dsh.profile.patchReload = "startup";
   await writeFile(profileFile, JSON.stringify(profile, null, 2));
 }
+/**
+ * 伴学场景用不到的 DSH 客户端插件，逐个禁用。
+ *
+ * 为什么必须在这里禁用：DSH 的浏览器插件清单是在启动时算好、内联进
+ * `window.__DSH_BOOT__` 的，之后所有 client.js 会被合并成**一个** `??` 请求
+ * 一次性下发（实测集合被整体签名，抽掉任一模块整包即拒绝）。所以"按需加载"
+ * 走不通，只能从清单里摘掉。
+ *
+ * 收益最大的一条是 `ui-sidebar-documentpreview`：它把整个 PDF.js
+ * （pdfjs-dist）打进了客户端，单模块实测 6726.9 KB 裸传 / 2896.9 KB gzip，
+ * **占全包 61.6%**。而 LearnBuddy 的课件阅读是自己实现的
+ * （web/src/pages/Material.tsx + BlobPreview），不用 DSH 的侧栏文档预览。
+ *
+ * 注意：这些是**清单行的 id**（来自 `dsh --dump-config`），不是包名——
+ * 写错时 DSH 只 warn 不报错，会静默失效。改完请用
+ * `--dump-config` 核对 disabled 真的生效了。
+ */
+const LEARNBUDDY_DISABLED_PLUGINS = [
+  // 收益最大：PDF.js 全家桶，占全包 61.6%
+  "ui-sidebar-documentpreview",
+];
+
 const patch = path.join(preview, "learnbuddy.patch.yml");
 await writeFile(
   patch,
@@ -55,6 +77,7 @@ await writeFile(
           { id: "learnbuddy-ui", name: path.join(webRoot, "dsh-ui/host.js") },
         ],
       },
+      ...LEARNBUDDY_DISABLED_PLUGINS.map((id) => ({ id, disabled: true })),
     ],
     null,
     2,
