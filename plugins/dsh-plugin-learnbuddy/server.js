@@ -30,6 +30,27 @@ export const DSH_HOST = process.env.DSH_HOST || "127.0.0.1";
 export const DSH_AUTHORITY = `127.0.0.1:${DSH_PORT}`;
 
 /**
+ * 代理 DSH 构建产物时补上的缓存策略。
+ *
+ * DSH 侧对自己的 /assets/* 不设任何缓存头（实测无 Cache-Control、无 ETag、无 Last-Modified），
+ * 而这些基本都是**带内容哈希的构建产物**（如 index-DuF6ti6g.js、ui-6e-ulqkm.js）——
+ * 名字变了内容才变。缺了它，浏览器每次进入阅读空间都要重新下载这几百 KB 的插件包，
+ * 这是「学习助手要等」的主要原因（实测线上该响应头为空）。
+ *
+ * 为什么是 1 天而不是 1 年 immutable：LearnBuddy 自己的静态产物用 1 年 immutable，
+ * 因为那是我们自己的 Vite 构建、哈希可证；DSH 的 /assets/* 我们无法逐一证明都带哈希，
+ * 用 1 天既保证演示当天必定命中缓存，万一判错也能在一天内自愈。
+ */
+export const PROXIED_ASSET_CACHE_CONTROL = "public, max-age=86400";
+
+/**
+ * 只对 /assets/ 下带静态资源扩展名的构建产物补缓存头；
+ * 其余（页面、接口、无扩展名路径）一律原样透传，不改变任何现有行为。
+ */
+const CACHEABLE_ASSET_PATH_RE =
+  /^\/assets\/[^/]+\.(?:js|mjs|css|woff2?|ttf|otf|png|jpe?g|gif|svg|webp|ico|mp4)$/;
+
+/**
  * 构造网关（可被 server.js 顶层与测试共同使用）
  *
  * @param {object} [options]
@@ -172,7 +193,18 @@ export function createGateway(options = {}) {
           `请确认 ${SESSION_INJECT_ENV}=1 且凭据文档可用。`
         );
       }
-      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+      // 见 PROXIED_ASSET_CACHE_CONTROL：DSH 不给自己的构建产物设缓存头，
+      // 这里在代理层补上（仅限带内容哈希的 /assets/* 产物，其余原样透传）。
+      const proxiedPath = typeof req.url === "string" ? req.url.split("?")[0] : "";
+      const outHeaders = { ...proxyRes.headers };
+      if (
+        proxyRes.statusCode === 200 &&
+        !outHeaders["cache-control"] &&
+        CACHEABLE_ASSET_PATH_RE.test(proxiedPath)
+      ) {
+        outHeaders["cache-control"] = PROXIED_ASSET_CACHE_CONTROL;
+      }
+      res.writeHead(proxyRes.statusCode, outHeaders);
       proxyRes.pipe(res, { end: true });
     });
 
