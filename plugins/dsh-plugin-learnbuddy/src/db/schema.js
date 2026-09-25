@@ -24,7 +24,8 @@ export const DEMO_PASSWORD = "123";
  */
 export const MATERIAL_PARSE_ERROR_COLUMNS = [
   { name: "parse_error_code", ddl: "parse_error_code TEXT" },
-  { name: "parse_error", ddl: "parse_error TEXT" }
+  { name: "parse_error", ddl: "parse_error TEXT" },
+  { name: "content", ddl: "content TEXT" }
 ];
 
 /**
@@ -94,6 +95,8 @@ CREATE TABLE IF NOT EXISTS materials (
   knowledge TEXT DEFAULT '[]',
   cards TEXT DEFAULT '[]',
   teaching TEXT,
+  -- 真实正文持久化（Markdown 格式，空值/null 兼容历史数据与解析失败场景）
+  content TEXT,
   -- task-15：解析失败时的原因码与可读信息（解析成功时均为 NULL）
   parse_error_code TEXT,
   parse_error TEXT,

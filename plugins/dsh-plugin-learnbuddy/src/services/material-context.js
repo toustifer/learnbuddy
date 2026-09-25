@@ -184,6 +184,85 @@ export function parseKeywords(keywords) {
   return [];
 }
 
+/**
+ * 按 Markdown 标题切分正文为多页 Sections。
+ * 若无标题，按段落合并分组；不伪造页码与假图表。
+ *
+ * @param {string} markdown
+ * @param {string} [materialTitle]
+ * @returns {Array<{page: number, chapter: string, content: string, diagrams: any[]}>}
+ */
+export function splitMarkdownToSections(markdown, materialTitle = "") {
+  if (!markdown || typeof markdown !== "string" || !markdown.trim()) return [];
+  const lines = markdown.split(/\r?\n/);
+  const rawSections = [];
+  let currentTitle = "";
+  let currentLines = [];
+
+  for (const line of lines) {
+    const headerMatch = line.match(/^(#{1,6})\s+(.+)$/);
+    if (headerMatch) {
+      if (currentLines.length > 0 || currentTitle) {
+        rawSections.push({ title: currentTitle, text: currentLines.join("\n").trim() });
+        currentLines = [];
+      }
+      currentTitle = headerMatch[2].trim();
+    } else {
+      currentLines.push(line);
+    }
+  }
+  if (currentLines.length > 0 || currentTitle) {
+    rawSections.push({ title: currentTitle, text: currentLines.join("\n").trim() });
+  }
+
+  let filtered = rawSections.filter((s) => s.title || s.text);
+  if (filtered.length === 0) return [];
+
+  // 若全文没有标题且内容较长，按段落（双换行）合理分组，避免单页过长
+  if (filtered.length === 1 && !filtered[0].title) {
+    const paragraphs = filtered[0].text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+    if (paragraphs.length > 1) {
+      const chunks = [];
+      let currentChunk = [];
+      let currentLen = 0;
+      for (const p of paragraphs) {
+        if (currentLen > 800 && currentChunk.length > 0) {
+          chunks.push(currentChunk.join("\n\n"));
+          currentChunk = [p];
+          currentLen = p.length;
+        } else {
+          currentChunk.push(p);
+          currentLen += p.length;
+        }
+      }
+      if (currentChunk.length > 0) {
+        chunks.push(currentChunk.join("\n\n"));
+      }
+      if (chunks.length > 1) {
+        filtered = chunks.map((chunk, idx) => ({
+          title: `第 ${idx + 1} 部分`,
+          text: chunk
+        }));
+      }
+    }
+  }
+
+  return filtered.map((sec, idx) => {
+    const pageNum = idx + 1;
+    let chapter = sec.title;
+    if (!chapter) {
+      chapter = filtered.length === 1 ? (materialTitle || "正文内容") : `第 ${pageNum} 节`;
+    }
+    const content = sec.text ? sec.text : sec.title;
+    return {
+      page: pageNum,
+      chapter,
+      content,
+      diagrams: []
+    };
+  });
+}
+
 export class MaterialContextService {
   /**
    * @param {import('../db/store.js').DatabaseStore} store
@@ -235,12 +314,18 @@ export class MaterialContextService {
     // 组装每页图文说明（Diagram / Figure / Chapter）
     const pageCount = Math.max(1, Number(material.pages) || 1);
     let sections = [];
+    let isSynthetic = false;
 
-    // 1. 若命中内置标杆 sampleKey，加载高质量预置图文
+    // 1. 若命中内置标杆 sampleKey，加载高质量预置图文（内置教学样例，非合成兜底）
     if (material.sampleKey && SAMPLE_PAGE_TEMPLATES[material.sampleKey]) {
       sections = JSON.parse(JSON.stringify(SAMPLE_PAGE_TEMPLATES[material.sampleKey]));
+    } else if (material.content && typeof material.content === "string" && material.content.trim()) {
+      // 2. 真实正文切分：优先按 Markdown 标题切页，无标题按自然段落分组，不伪造页码或假图表
+      sections = splitMarkdownToSections(material.content, material.title);
+      isSynthetic = false;
     } else {
-      // 2. 通用兜底：根据页码和已抽取知识点动态合成结构化图文段落
+      // 3. 通用兜底：既无内置模板又无真实正文时，显式标记为合成兜底 (synthetic: true)
+      isSynthetic = true;
       for (let p = 1; p <= pageCount; p++) {
         const pageKps = knowledgePoints.filter((kp) => kp.page === p);
         const chapterTitle = pageKps.length > 0
@@ -268,7 +353,8 @@ export class MaterialContextService {
           page: p,
           chapter: chapterTitle,
           content: contentText,
-          diagrams
+          diagrams,
+          synthetic: true
         });
       }
     }
@@ -312,6 +398,7 @@ export class MaterialContextService {
       date: material.date,
       blobId: material.blobId,
       sampleKey: material.sampleKey,
+      synthetic: isSynthetic,
       sections,
       pageContents: sections, // 兼容别名
       diagrams: allDiagrams,

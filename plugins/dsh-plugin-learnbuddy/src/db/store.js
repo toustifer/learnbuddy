@@ -61,6 +61,8 @@ function mapMaterial(row) {
     knowledge: row.knowledge ? JSON.parse(row.knowledge) : [],
     cards: row.cards ? JSON.parse(row.cards) : [],
     teaching: row.teaching || undefined,
+    // 真实正文持久化（Markdown 格式；无正文时为 undefined）
+    content: row.content || undefined,
     // task-15：解析结果状态。成功/未解析的课件不带 parseError / parseErrorCode（字段不出现），
     // 只有失败记录才带原因码与可读信息，避免列表里出现一堆 null 噪声。
     parseStatus: deriveParseStatus(row),
@@ -378,8 +380,8 @@ export class DatabaseStore {
       INSERT INTO materials (
         id, course_id, owner_id, title, kind, visibility, status,
         size, pages, date, sample_key, blob_id, knowledge, cards, teaching,
-        parse_error_code, parse_error
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        content, parse_error_code, parse_error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const status = material.status || "ready";
     const parseState = normalizeParseState(status, material.parseErrorCode, material.parseError);
@@ -399,6 +401,7 @@ export class DatabaseStore {
       JSON.stringify(material.knowledge || []),
       JSON.stringify(material.cards || []),
       material.teaching || null,
+      material.content || null,
       parseState.parseErrorCode,
       parseState.parseError
     );
@@ -486,6 +489,7 @@ export class DatabaseStore {
         knowledge = ?,
         cards = ?,
         teaching = ?,
+        content = ?,
         parse_error_code = ?,
         parse_error = ?
       WHERE id = ?
@@ -505,6 +509,7 @@ export class DatabaseStore {
       JSON.stringify(merged.knowledge || []),
       JSON.stringify(merged.cards || []),
       merged.teaching || null,
+      merged.content !== undefined ? merged.content : null,
       parseState.parseErrorCode,
       parseState.parseError,
       id

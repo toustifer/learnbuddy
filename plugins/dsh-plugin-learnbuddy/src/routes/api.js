@@ -595,6 +595,8 @@ export function registerLearnBuddyRoutes(ctx, options = {}) {
           blobId: savedFile.fileId,
           knowledge: parsed.knowledgePoints || [],
           cards: [],
+          // 真实正文持久化（成功时存储 markdown，失败时为 null）
+          content: parseFailed ? null : (parsed.content || null),
           // task-15：错误必须落库（成功时写 null，不残留任何陈旧错误）
           parseErrorCode: parsed.errorCode || null,
           parseError: parsed.error || null

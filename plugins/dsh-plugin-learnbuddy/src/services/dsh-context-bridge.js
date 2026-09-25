@@ -261,11 +261,19 @@ export class DshContextBridgeService {
     if (includeDiagrams) {
       const sections = materialContext.sections || materialContext.pageContents || [];
       if (sections.length > 0) {
-        lines.push("【逐页图文与图表清单 (多模态图表先验)】");
+        if (materialContext.synthetic) {
+          lines.push("【逐页图文与图表清单 (注意：该课件正文未提取，以下为基于考点合成的辅助提示，非原文)】");
+        } else {
+          lines.push("【逐页图文与图表清单 (多模态图表先验)】");
+        }
         for (const sec of sections) {
           lines.push(`- 第 ${sec.page} 页 [${sec.chapter || `第 ${sec.page} 节`}]:`);
           if (sec.content) {
-            lines.push(`  正文阐述: ${sec.content}`);
+            if (sec.synthetic || materialContext.synthetic) {
+              lines.push(`  摘要提示 (非原文): ${sec.content}`);
+            } else {
+              lines.push(`  正文阐述: ${sec.content}`);
+            }
           }
           if (Array.isArray(sec.diagrams) && sec.diagrams.length > 0) {
             lines.push(`  图表清单:`);
