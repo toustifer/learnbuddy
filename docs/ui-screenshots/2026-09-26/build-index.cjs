@@ -20,6 +20,16 @@ const ok = manifest.filter((m) => m.file);
 const totalBytes = ok.reduce((s, m) => s + (m.bytes || 0), 0);
 const mb = (totalBytes / 1048576).toFixed(1);
 
+// 来源：截图可能来自不同环境，必须能一眼分辨（线上 3088 / 本机预览）
+const isLocal = (m) => typeof m.source === "string" && m.source.indexOf("本机") === 0;
+const localCount = ok.filter(isLocal).length;
+const onlineCount = ok.length - localCount;
+const srcClass = (m) => (isLocal(m) ? "src local" : "src online");
+const srcText = (m) => (m.source ? m.source : ENV_LABEL);
+const dims = (m) => (m.imgW && m.imgH ? `${m.imgW}×${m.imgH}` : `页面高 ${m.h}px`);
+// 操作者：默认用角色对应的演示账号；个别条目（用户提供）自带 actor，优先用
+const roleLabel = (m) => m.actor || ROLE_LABEL[m.role];
+
 function esc(s) {
   return String(s == null ? "" : s)
     .replace(/&/g, "&amp;")
@@ -40,9 +50,9 @@ const cards = ROLE_ORDER.map((role) => {
           <img loading="lazy" src="${esc(m.file)}" alt="${esc(m.title)}" />
         </a>
         <div class="meta">
-          <h3>${esc(m.title)}</h3>
-          <p class="route"><code>${esc(m.hash)}</code></p>
-          <p class="sub">${esc(m.file)} · ${(m.bytes / 1024).toFixed(0)} KB · 页面高 ${esc(m.h)}px</p>
+          <h3>${esc(m.title)} <span class="${srcClass(m)}">${esc(srcText(m))}</span></h3>
+          <p class="route"><code>${esc(m.hash)}</code>${m.course ? ` <span class="sub dim">${esc(m.course)}${m.material ? " · " + esc(m.material) : ""}</span>` : ""}</p>
+          <p class="sub">${esc(m.file)} · ${(m.bytes / 1024).toFixed(0)} KB · ${esc(dims(m))}</p>
           <p class="sub dim">${esc((m.text || "").slice(0, 70))}</p>
           ${m.note ? `<p class="note">${esc(m.note)}</p>` : ""}
         </div>
@@ -91,6 +101,9 @@ const html = `<!DOCTYPE html>
   .sub { margin:4px 0 0; font-size:12px; color:var(--dim); }
   .sub.dim { color:#9ca3af; }
   .note { margin:7px 0 0; font-size:12px; line-height:1.5; color:#92400e; background:#fffbeb; border-left:3px solid #fcd34d; padding:5px 8px; border-radius:4px; }
+  .src { font-size:11px; font-weight:400; padding:1px 6px; border-radius:999px; vertical-align:2px; white-space:nowrap; }
+  .src.online { background:#eef2f7; color:#475569; }
+  .src.local { background:#ecfdf5; color:#047857; border:1px solid #a7f3d0; }
   ul { color:var(--dim); }
   footer { padding:0 24px 40px; color:var(--dim); font-size:12px; }
 </style>
@@ -98,7 +111,8 @@ const html = `<!DOCTYPE html>
 <body>
 <header>
   <h1>LearnBuddy 界面截图索引 · ${TODAY}</h1>
-  <p class="lead">环境：${esc(ENV_LABEL)}　共 ${ok.length} 张，合计约 ${mb} MB。点任意卡片可看原图。</p>
+  <p class="lead">共 ${ok.length} 张（线上 ${onlineCount} 张 + 本机预览 ${localCount} 张），合计约 ${mb} MB。点任意卡片可看原图。</p>
+  <p class="lead">线上环境：${esc(ENV_LABEL)}<br />每张卡片右上角的灰/绿标签标明来源 —— <b>绿标「本机预览」的截图与线上不是同一环境</b>，对照看时请注意。</p>
   <input id="q" type="search" placeholder="搜索页面名 / 路由 / 文件名，例如「评阅」「#insights」「teacher」" autocomplete="off" />
   <p class="hint">按角色分组；输入即过滤（匹配标题、路由、文件名与页面正文片段）。</p>
 </header>
@@ -131,24 +145,28 @@ fs.writeFileSync(path.join(OUT, "index.html"), html, "utf-8");
 const rows = ok
   .map(
     (m) =>
-      `| ${m.title} | \`${m.hash}\` | ${ROLE_LABEL[m.role]} | [\`${m.file}\`](./${m.file}) | ${(m.bytes / 1024).toFixed(0)} KB | ${m.note ? m.note.replace(/\n/g, " ") : "—"} |`
+      `| ${m.title} | \`${m.hash}\` | ${roleLabel(m)} | ${srcText(m)} | [\`${m.file}\`](./${m.file}) | ${(m.bytes / 1024).toFixed(0)} KB | ${m.note ? m.note.replace(/\n/g, " ") : "—"} |`
   )
   .join("\n");
 
 const md = `# LearnBuddy 界面截图清单
 
-> 采集日期：${TODAY}　采集环境：${ENV_LABEL}
-> 共 **${ok.length}** 张，合计约 **${mb} MB**。
+> 采集日期：${TODAY}
+> 共 **${ok.length}** 张（**线上 ${onlineCount} 张** + **本机预览 ${localCount} 张**），合计约 **${mb} MB**。
+>
+> - 线上：${ENV_LABEL}
+> - 本机预览：用户在本机环境提供的补充截图，右下角带「本机预览」角标。
+>   **两个环境不是同一份部署**，对照看时请注意来源列。
 
-**想直接找页面**：打开 [\`index.html\`](./index.html)（带搜索框，输入页面名 / 路由 / 文件名即可过滤）。
+**想直接找页面**：打开 [\`index.html\`](./index.html)（带搜索框，输入页面名 / 路由 / 文件名 / 课程名即可过滤）。
 
-采集方式：Playwright 驱动 Chrome 153，视口 1440×900、deviceScaleFactor 2，全页截图；
+线上那批的采集方式：Playwright 驱动 Chrome 153，视口 1440×900、deviceScaleFactor 2，全页截图；
 登录态由服务端令牌注入（教师 \`teacher.lin\`、学生 \`student.xu\`，演示口令 \`123\`）。
 
 ## 清单
 
-| 页面 | 路由 | 角色 | 文件 | 体积 | 备注 |
-| :--- | :--- | :--- | :--- | ---: | :--- |
+| 页面 | 路由 | 角色 | 来源 | 文件 | 体积 | 备注 |
+| :--- | :--- | :--- | :--- | :--- | ---: | :--- |
 ${rows}
 
 ## 复现
@@ -183,13 +201,13 @@ fs.writeFileSync(path.join(OUT, "README.md"), md, "utf-8");
 const imaRows = ok
   .map(
     (m) =>
-      `| ${m.file} | 【${ROLE_LABEL[m.role].split("（")[0]}】${m.title} | \`${m.hash}\` | LearnBuddy / 界面截图 / ${m.role === "teacher" ? "教师端" : m.role === "student" ? "学生端" : "公共页"} |`
+      `| ${m.file} | 【${roleLabel(m).split("（")[0]}${isLocal(m) ? " · 本机预览" : ""}】${m.title} | \`${m.hash}\`${m.course ? " " + m.course : ""} | LearnBuddy / 界面截图 / ${m.role === "teacher" ? "教师端" : m.role === "student" ? "学生端" : "公共页"} |`
   )
   .join("\n");
 
 const ima = `# 界面截图 → IMA 知识库 导入说明
 
-> 目录：\`docs/ui-screenshots/${TODAY}/\`　共 ${ok.length} 张，约 ${mb} MB。
+> 目录：\`docs/ui-screenshots/${TODAY}/\`　共 ${ok.length} 张（线上 ${onlineCount} + 本机预览 ${localCount}），约 ${mb} MB。
 > 目的：**别人想找「某个页面长什么样」时，能按页面名/角色/路由直接搜到。**
 
 ## 为什么需要这份说明

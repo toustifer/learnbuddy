@@ -1,6 +1,6 @@
 # 界面截图 → IMA 知识库 导入说明
 
-> 目录：`docs/ui-screenshots/2026-09-26/`　共 19 张，约 5.1 MB。
+> 目录：`docs/ui-screenshots/2026-09-26/`　共 21 张（线上 19 + 本机预览 2），约 5.6 MB。
 > 目的：**别人想找「某个页面长什么样」时，能按页面名/角色/路由直接搜到。**
 
 ## 为什么需要这份说明
@@ -38,6 +38,8 @@
 | 25-student-assignment.png | 【学生】作业提交页 | `#assignment/lab-db` | LearnBuddy / 界面截图 / 学生端 |
 | 26-student-report.png | 【学生】我的报告 | `#report/sub-xu-db` | LearnBuddy / 界面截图 / 学生端 |
 | 27-student-insights.png | 【学生】我的学情（学生视角） | `#insights/database` | LearnBuddy / 界面截图 / 学生端 |
+| 30-student-material-assistant.png | 【学生 · 本机预览】课件阅读 + 学习助手（助手可用） | `#material/mat-tcp` 计算机网络 | LearnBuddy / 界面截图 / 学生端 |
+| 31-teacher-material-prep-assistant.png | 【教师 · 本机预览】课件工作区 · 备课助手 + 备课笔记 / 答疑卡 | `#material/mat-os` 操作系统 | LearnBuddy / 界面截图 / 教师端 |
 
 ## 备注
 
